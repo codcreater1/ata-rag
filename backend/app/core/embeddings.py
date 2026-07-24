@@ -29,6 +29,11 @@ class EmbeddingError(RuntimeError):
     pass
 
 
+class DailyQuotaExceeded(EmbeddingError):
+    """The free-tier per-day embedding cap is spent — retrying only wastes more
+    of tomorrow's budget, so callers should stop rather than back off."""
+
+
 def is_enabled() -> bool:
     return bool(google_api_key())
 
@@ -56,8 +61,20 @@ def _post(path: str, payload: dict, timeout: float = 60) -> dict:
     for attempt in range(_MAX_RETRIES):
         try:
             r = httpx.post(url, json=payload, timeout=timeout)
-            # Free tier is rate-limited; back off rather than losing the batch.
-            if r.status_code in (429, 500, 503):
+            if r.status_code == 429:
+                # Distinguish the per-minute rate limit (worth retrying) from the
+                # per-day cap (retrying just burns tomorrow's budget).
+                if "PerDay" in r.text:
+                    raise DailyQuotaExceeded(
+                        "Gemini free-tier daily embedding quota (1000/day) is spent."
+                    )
+                if attempt == _MAX_RETRIES - 1:
+                    raise EmbeddingError(f"embedding API 429: {r.text[:200]}")
+                logger.warning("rate-limited — retrying in %.0fs", delay)
+                time.sleep(delay)
+                delay *= 2
+                continue
+            if r.status_code in (500, 503):
                 if attempt == _MAX_RETRIES - 1:
                     raise EmbeddingError(f"embedding API {r.status_code}: {r.text[:200]}")
                 logger.warning("embedding API %s — retrying in %.0fs", r.status_code, delay)

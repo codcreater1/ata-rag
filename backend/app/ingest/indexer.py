@@ -38,7 +38,14 @@ def run(*, limit: int | None = None, skip_crawl: bool = False,
         logger.exception("tuition ingestion failed; continuing with crawled pages")
 
     stats = {"pages": len(pages), "indexed": 0, "skipped": 0,
-             "chunks": 0, "failed": 0}
+             "chunks": 0, "failed": 0, "quota_reached": False}
+
+    # Embed the highest-value pages first so a day capped by the free-tier quota
+    # still covers tuition, programmes and admissions before news posts.
+    priority = {"tuition": 0, "page": 1, "bachelor": 2, "master": 2,
+                "postgraduate": 3, "mba": 3, "courses": 3, "faq": 1,
+                "contact": 4, "exams": 4, "post": 9}
+    pages.sort(key=lambda p: priority.get(p.source_type, 5))
 
     for page in pages:
         content_hash = _hash(page.markdown)
@@ -68,6 +75,14 @@ def run(*, limit: int | None = None, skip_crawl: bool = False,
 
             stats["indexed"] += 1
             stats["chunks"] += len(chunks)
+        except embeddings.DailyQuotaExceeded:
+            # Stop cleanly: today's budget is gone. Already-committed documents
+            # persist, and tomorrow's run resumes from here (unchanged pages are
+            # skipped by content hash). Never a crash, never a partial commit.
+            stats["quota_reached"] = True
+            logger.warning("daily embedding quota reached — stopping after %d docs",
+                           stats["indexed"])
+            break
         except Exception:
             logger.exception("failed to index %s", page.url)
             stats["failed"] += 1
