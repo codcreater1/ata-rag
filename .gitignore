@@ -1,0 +1,20 @@
+# secrets
+.env
+**/.env
+*.env.local
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# node
+node_modules/
+dist/
+.vite/
+
+# os / logs
+.DS_Store
+Thumbs.db
+*.log

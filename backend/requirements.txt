@@ -1,0 +1,14 @@
+# Python 3.12+
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+python-dotenv
+httpx
+psycopg[binary]
+psycopg-pool
+pgvector
+trafilatura
+openai
+langfuse
+pytest
