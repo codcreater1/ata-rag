@@ -82,9 +82,31 @@ curl -X POST localhost:8000/chat/ask \
 
 Every answer is traced in LangFuse (retrieval scores, latency, tokens) when `LANGFUSE_*` keys are set, and every question — answered or not — is logged to the `queries` table. The dashboard surfaces common questions, **unanswered ones** (where the knowledge base has gaps), retrieval quality and feedback.
 
+## Deployment (Coolify)
+
+Three resources, all pointing at the same Neon database:
+
+| Resource | Type | Notes |
+|---|---|---|
+| **backend** | Dockerfile (`/Dockerfile`), port 8000 | env: `GOOGLE_API_KEY`, `LLM_API_KEY`, `DATABASE_URL`, optional `LANGFUSE_*` |
+| **frontend** | Dockerfile (`/frontend/Dockerfile`), port 80 | build arg `VITE_API_URL` = the backend's public URL (must be **Available at Buildtime**) |
+| **crawler** | Scheduled task, nightly `0 2 * * *` | command below; same env as backend |
+
+Scheduled-task command (re-crawl + re-embed only what changed):
+
+```bash
+python -m app.ingest.indexer
+```
+
+CORS: set `ATARAG_CORS_ORIGINS` on the backend to the frontend's public origin
+(HTTPS), e.g. `["https://ata-rag.example.com"]`.
+
 ## Nightly refresh
 
-`python -m app.ingest.indexer` runs as a Coolify scheduled task. Pages whose content is byte-identical to the stored copy are skipped, so a routine run re-embeds only what changed.
+`python -m app.ingest.indexer` runs as the scheduled task above. Pages whose
+extracted content is byte-identical to the stored copy are skipped, so a routine
+run re-embeds only what changed; tuition cards are always refreshed. The vector
+index (ivfflat) is (re)built automatically once the corpus is large enough.
 
 ## License
 
