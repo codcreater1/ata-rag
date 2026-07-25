@@ -36,7 +36,10 @@ def stats():
                    round(avg(latency_ms))                        AS avg_latency_ms,
                    round(avg(top_similarity)::numeric, 3)        AS avg_similarity,
                    count(*) FILTER (WHERE feedback = 1)          AS helpful,
-                   count(*) FILTER (WHERE feedback = -1)         AS not_helpful
+                   count(*) FILTER (WHERE feedback = -1)         AS not_helpful,
+                   COALESCE(sum(prompt_tokens), 0)               AS prompt_tokens,
+                   COALESCE(sum(completion_tokens), 0)           AS completion_tokens,
+                   COALESCE(sum(prompt_tokens + completion_tokens), 0) AS total_tokens
               FROM queries
         """)[0]
 
@@ -103,6 +106,23 @@ def gaps(limit: int = 20):
              WHERE NOT answered
              GROUP BY lower(btrim(question))
              ORDER BY times_asked DESC, last_asked DESC
+             LIMIT %s
+        """, (min(limit, 100),))}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Database unavailable: {exc}")
+
+
+@router.get("/clicked-sources")
+def clicked_sources(limit: int = 20):
+    """Sources visitors actually opened — what they trusted enough to go read."""
+    try:
+        return {"sources": _rows("""
+            SELECT url,
+                   max(title)  AS title,
+                   count(*)    AS clicks
+              FROM source_clicks
+             GROUP BY url
+             ORDER BY clicks DESC
              LIMIT %s
         """, (min(limit, 100),))}
     except Exception as exc:

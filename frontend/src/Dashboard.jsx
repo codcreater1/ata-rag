@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, Database, FileText, Gauge, MessageSquare, ThumbsUp } from "lucide-react";
+import { AlertTriangle, Coins, Database, FileText, Gauge, MessageSquare, MousePointerClick, ThumbsUp } from "lucide-react";
 
-import { getGaps, getStats, getTopQuestions } from "./api";
+import { getClickedSources, getGaps, getStats, getTopQuestions } from "./api";
 
 function Card({ icon, label, value, sub }) {
   return (
@@ -20,12 +20,14 @@ export default function Dashboard() {
   const [stats, setStats] = useState(null);
   const [gaps, setGaps] = useState([]);
   const [top, setTop] = useState([]);
+  const [clicked, setClicked] = useState([]);
   const [error, setError] = useState("");
 
   useEffect(() => {
     getStats().then(setStats).catch(() => setError("Dashboard data unavailable."));
     getGaps().then((d) => setGaps(d.gaps || []));
     getTopQuestions().then((d) => setTop(d.questions || []));
+    getClickedSources().then((d) => setClicked(d.sources || []));
   }, []);
 
   if (error) return <div className="dashError">{error}</div>;
@@ -54,6 +56,18 @@ export default function Dashboard() {
           label="Avg. match"
           value={usage.avg_similarity != null ? `${Math.round(usage.avg_similarity * 100)}%` : "—"}
           sub={usage.avg_latency_ms ? `${usage.avg_latency_ms} ms avg` : ""}
+        />
+        <Card
+          icon={<Coins size={20} />}
+          label="Tokens used"
+          value={
+            usage.total_tokens
+              ? usage.total_tokens >= 1000
+                ? `${(usage.total_tokens / 1000).toFixed(1)}k`
+                : usage.total_tokens
+              : "—"
+          }
+          sub={`${usage.prompt_tokens || 0} in / ${usage.completion_tokens || 0} out`}
         />
         <Card
           icon={<ThumbsUp size={20} />}
@@ -103,6 +117,25 @@ export default function Dashboard() {
           )}
         </section>
       </div>
+
+      <section className="dashPanel">
+        <h3><MousePointerClick size={16} /> Most clicked sources</h3>
+        <p className="panelHint">Which cited pages visitors actually opened.</p>
+        {clicked.length === 0 ? (
+          <div className="dashEmpty">No source clicks recorded yet.</div>
+        ) : (
+          <ul className="qList">
+            {clicked.map((s, i) => (
+              <li key={i}>
+                <a className="qText srcLink" href={s.url} target="_blank" rel="noreferrer">
+                  {s.title || s.url}
+                </a>
+                <span className="qMeta">{s.clicks} clicks</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
     </div>
   );
 }
