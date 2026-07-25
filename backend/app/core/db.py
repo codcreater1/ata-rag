@@ -58,7 +58,11 @@ CREATE TABLE IF NOT EXISTS documents (
     content_hash TEXT NOT NULL DEFAULT '',
     markdown    TEXT NOT NULL DEFAULT '',
     fetched_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (url, language)
+    -- source_type is part of the key: a tuition card deliberately cites the
+    -- programme page it describes, and the crawler fetches that same page. They
+    -- are different documents about one URL and must coexist — keying on
+    -- (url, language) alone let the crawled page overwrite the fee card.
+    UNIQUE (url, language, source_type)
 );
 
 CREATE TABLE IF NOT EXISTS chunks (
@@ -94,9 +98,34 @@ CREATE INDEX IF NOT EXISTS chunks_embedding_idx
 """
 
 
+# Databases created before source_type joined the key still carry the old
+# constraint, under which crawled pages silently replaced tuition cards.
+_MIGRATE_UNIQUE = """
+DO $$
+DECLARE
+    old_name text;
+BEGIN
+    SELECT c.conname INTO old_name
+      FROM pg_constraint c
+      JOIN pg_class t ON t.oid = c.conrelid
+     WHERE t.relname = 'documents'
+       AND c.contype = 'u'
+       AND (SELECT count(*) FROM unnest(c.conkey)) = 2;
+
+    IF old_name IS NOT NULL THEN
+        EXECUTE format('ALTER TABLE documents DROP CONSTRAINT %I', old_name);
+        ALTER TABLE documents
+            ADD CONSTRAINT documents_url_language_source_type_key
+            UNIQUE (url, language, source_type);
+    END IF;
+END $$;
+"""
+
+
 def init_schema() -> None:
     with connection() as conn:
         conn.execute(SCHEMA % {"dim": settings.embedding_dim})
+        conn.execute(_MIGRATE_UNIQUE)
         conn.commit()
     logger.info("schema ready")
 
@@ -117,9 +146,12 @@ def build_vector_index() -> None:
 def upsert_document(conn, *, url, title, language, source_type, lastmod,
                     content_hash, markdown) -> tuple[int, bool]:
     """Insert or update a document. Returns (id, changed)."""
+    # Match the uniqueness key exactly, so a crawled page never displaces the
+    # tuition card that cites the same URL.
     row = conn.execute(
-        "SELECT id, content_hash FROM documents WHERE url = %s AND language = %s",
-        (url, language),
+        """SELECT id, content_hash FROM documents
+            WHERE url = %s AND language = %s AND source_type = %s""",
+        (url, language, source_type),
     ).fetchone()
 
     if row and row["content_hash"] == content_hash:
@@ -128,10 +160,10 @@ def upsert_document(conn, *, url, title, language, source_type, lastmod,
     if row:
         conn.execute(
             """UPDATE documents
-                  SET title=%s, source_type=%s, lastmod=%s, content_hash=%s,
+                  SET title=%s, lastmod=%s, content_hash=%s,
                       markdown=%s, fetched_at=now()
                 WHERE id=%s""",
-            (title, source_type, lastmod, content_hash, markdown, row["id"]),
+            (title, lastmod, content_hash, markdown, row["id"]),
         )
         return row["id"], True
 
