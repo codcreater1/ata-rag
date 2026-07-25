@@ -1,15 +1,22 @@
 import { useEffect, useRef, useState } from "react";
 import { ExternalLink, Send, ThumbsDown, ThumbsUp } from "lucide-react";
 
-import { ask, getSuggestions, sendFeedback } from "./api";
+import { askStream, getSuggestions, sendFeedback, trackSourceClick } from "./api";
 
-function Sources({ sources }) {
+function Sources({ sources, queryId }) {
   if (!sources?.length) return null;
   return (
     <div className="sources">
       <span className="sourcesLabel">Sources</span>
       {sources.map((s) => (
-        <a key={s.n} href={s.url} target="_blank" rel="noreferrer" className="source">
+        <a
+          key={s.n}
+          href={s.url}
+          target="_blank"
+          rel="noreferrer"
+          className="source"
+          onClick={() => trackSourceClick(s.url, s.title, queryId)}
+        >
           <ExternalLink size={12} /> {s.title}
         </a>
       ))}
@@ -58,16 +65,37 @@ export default function Chat({ language = "auto" }) {
     const q = (question ?? input).trim();
     if (!q || busy) return;
     setInput("");
+    // Send the recent exchange so follow-ups ("and in Wrocław?") resolve.
+    const history = messages
+      .slice(-6)
+      .map((m) => ({
+        role: m.role,
+        content: m.role === "user" ? m.text : m.answer,
+      }))
+      .filter((m) => m.content);
+
     setMessages((m) => [...m, { role: "user", text: q }]);
     setBusy(true);
+
+    // The assistant bubble is created empty and filled as tokens arrive.
+    const index = messages.length + 1;
+    setMessages((m) => [...m, { role: "assistant", answer: "", sources: [], streaming: true }]);
+
+    const patch = (fields) =>
+      setMessages((m) => m.map((msg, i) => (i === index ? { ...msg, ...fields } : msg)));
+
     try {
-      const res = await ask(q, language);
-      setMessages((m) => [...m, { role: "assistant", ...res }]);
+      let text = "";
+      await askStream(q, language, history, {
+        onSources: (sources) => patch({ sources }),
+        onToken: (piece) => {
+          text += piece;
+          patch({ answer: text });
+        },
+        onDone: (meta) => patch({ ...meta, streaming: false }),
+      });
     } catch (err) {
-      setMessages((m) => [
-        ...m,
-        { role: "assistant", answer: err.message, sources: [], answered: false },
-      ]);
+      patch({ answer: err.message, sources: [], answered: false, streaming: false });
     } finally {
       setBusy(false);
     }
@@ -104,8 +132,15 @@ export default function Chat({ language = "auto" }) {
           ) : (
             <div key={i} className="msg assistant">
               <div className="bubble">
-                <p className="answer">{m.answer}</p>
-                <Sources sources={m.sources} />
+                {m.streaming && !m.answer ? (
+                  <span className="typing"><i></i><i></i><i></i></span>
+                ) : (
+                  <p className="answer">
+                    {m.answer}
+                    {m.streaming && <span className="caret" />}
+                  </p>
+                )}
+                <Sources sources={m.sources} queryId={m.query_id} />
                 {m.confidence != null && (
                   <div className="metaRow">
                     <span className={`badge ${m.answered ? "ok" : "warn"}`}>
@@ -125,15 +160,7 @@ export default function Chat({ language = "auto" }) {
           ),
         )}
 
-        {busy && (
-          <div className="msg assistant">
-            <div className="bubble">
-              <span className="typing">
-                <i></i><i></i><i></i>
-              </span>
-            </div>
-          </div>
-        )}
+
         <div ref={endRef} />
       </div>
 

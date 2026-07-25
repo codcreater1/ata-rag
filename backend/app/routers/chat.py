@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.core import db
@@ -13,11 +14,18 @@ from app.services import rag
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
+class Turn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(max_length=4000)
+
+
 class AskRequest(BaseModel):
     question: str = Field(min_length=2, max_length=2000)
     top_k: int | None = Field(default=None, ge=1, le=20)
     # Force the reply language; omit or "auto" to mirror the question.
     language: Literal["auto", "en", "pl", "uk", "tr"] | None = None
+    # Prior turns, oldest first, so follow-ups resolve against them.
+    history: list[Turn] = Field(default_factory=list, max_length=20)
 
 
 class Source(BaseModel):
@@ -42,10 +50,43 @@ class FeedbackRequest(BaseModel):
     helpful: bool
 
 
+class SourceClickRequest(BaseModel):
+    url: str = Field(max_length=2000)
+    title: str = Field(default="", max_length=500)
+    query_id: int | None = None
+
+
 @router.post("/ask", response_model=AskResponse)
 def ask(request: AskRequest):
     language = None if request.language in (None, "auto") else request.language
-    return rag.answer(request.question, top_k=request.top_k, language=language)
+    return rag.answer(
+        request.question,
+        top_k=request.top_k,
+        language=language,
+        history=[t.model_dump() for t in request.history],
+    )
+
+
+@router.post("/ask/stream")
+def ask_stream(request: AskRequest):
+    """Same answer, streamed as Server-Sent Events so the reply appears as it
+    is written rather than after a multi-second wait."""
+    language = None if request.language in (None, "auto") else request.language
+    generator = rag.stream(
+        request.question,
+        top_k=request.top_k,
+        language=language,
+        history=[t.model_dump() for t in request.history],
+    )
+    return StreamingResponse(
+        generator,
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            # Proxies buffer by default, which would defeat streaming entirely.
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/suggestions")
@@ -82,3 +123,9 @@ def feedback(request: FeedbackRequest):
     if not updated:
         raise HTTPException(status_code=404, detail="Unknown query id")
     return {"ok": True}
+
+
+@router.post("/source-click", status_code=204)
+def source_click(request: SourceClickRequest):
+    """Record that a visitor opened a cited source (analytics only)."""
+    db.log_source_click(url=request.url, title=request.title, query_id=request.query_id)

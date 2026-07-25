@@ -167,3 +167,15 @@ body {
 .app .thread::-webkit-scrollbar-thumb, .dashboard::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 
 .welcomeLogo { width: 72px; height: 72px; object-fit: contain; }
+
+.srcLink { color: var(--accent); text-decoration: none; }
+.srcLink:hover { text-decoration: underline; }
+.dashboard > .dashPanel { margin-top: 16px; }
+
+/* Typing caret while the answer streams in. */
+.caret {
+  display: inline-block; width: 2px; height: 1em; margin-left: 2px;
+  background: var(--accent); vertical-align: text-bottom;
+  animation: caretBlink 1s step-end infinite;
+}
+@keyframes caretBlink { 50% { opacity: 0; } }
