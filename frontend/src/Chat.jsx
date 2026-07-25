@@ -80,7 +80,7 @@ export default function Chat() {
       <div className="thread">
         {empty && (
           <div className="welcome">
-            <div className="welcomeIcon">🎓</div>
+            <div className="welcomeIcon">🐻</div>
             <h2>Ask about studying at ATA</h2>
             <p>
               Tuition, admissions, programmes, student services — answered from the

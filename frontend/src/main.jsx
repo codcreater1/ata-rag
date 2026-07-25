@@ -12,7 +12,7 @@ function App() {
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <span className="logo">🎓</span>
+          <span className="logo">🐻</span>
           <div>
             <strong>ATA Assistant</strong>
             <small>Akademia Techniczno-Artystyczna</small>
