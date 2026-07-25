@@ -39,7 +39,7 @@ function Feedback({ queryId }) {
   );
 }
 
-export default function Chat() {
+export default function Chat({ language = "auto" }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -61,7 +61,7 @@ export default function Chat() {
     setMessages((m) => [...m, { role: "user", text: q }]);
     setBusy(true);
     try {
-      const res = await ask(q);
+      const res = await ask(q, language);
       setMessages((m) => [...m, { role: "assistant", ...res }]);
     } catch (err) {
       setMessages((m) => [

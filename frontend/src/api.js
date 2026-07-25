@@ -1,10 +1,10 @@
 export const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
-export async function ask(question) {
+export async function ask(question, language = "auto") {
   const res = await fetch(`${API_URL}/chat/ask`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question }),
+    body: JSON.stringify({ question, language }),
   });
   if (!res.ok) throw new Error("The assistant is unavailable right now.");
   return res.json();

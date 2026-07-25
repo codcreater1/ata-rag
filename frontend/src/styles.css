@@ -60,6 +60,21 @@ body {
 .brand strong { color: var(--accent-strong); }
 .brand strong { display: block; font-size: 15px; }
 .brand small { color: var(--muted); font-size: 12px; }
+.topRight { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+
+.langPicker {
+  display: flex; gap: 2px; padding: 3px;
+  border: 1px solid var(--border); border-radius: 9px; background: var(--bg);
+}
+.lang {
+  padding: 5px 10px; border: none; background: transparent;
+  color: var(--muted); border-radius: 6px;
+  font-size: 12px; font-weight: 700; letter-spacing: .02em;
+  cursor: pointer; font-family: inherit;
+}
+.lang:hover { color: var(--accent); }
+.lang.on { color: #fff; background: var(--accent); }
+
 .tabs { display: flex; gap: 6px; }
 .tab {
   padding: 7px 16px; border: 1px solid var(--border); background: transparent;

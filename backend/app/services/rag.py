@@ -67,12 +67,22 @@ picking one.
 - Do not list the sources yourself; they are attached separately."""
 
 
+# Written out per language rather than translated at runtime: this message is
+# shown exactly when the model is unavailable, so it cannot depend on it.
+_FALLBACKS = {
+    "pl": ("Nie znalazłem tej informacji na stronie uczelni. "
+           "Proszę o kontakt z uczelnią, aby uzyskać pewną odpowiedź."),
+    "uk": ("Я не знайшов цієї інформації на сайті університету. "
+           "Будь ласка, зверніться до університету, щоб отримати точну відповідь."),
+    "tr": ("Bu bilgiyi üniversitenin web sitesinde bulamadım. "
+           "Emin olmak için lütfen üniversiteyle iletişime geçin."),
+    "en": ("I could not find this information on the university website. "
+           "Please contact the university directly to be sure."),
+}
+
+
 def _fallback_answer(language_hint: str) -> str:
-    if language_hint == "pl":
-        return ("Nie znalazłem tej informacji na stronie uczelni. "
-                "Proszę o kontakt z uczelnią, aby uzyskać pewną odpowiedź.")
-    return ("I could not find this information on the university website. "
-            "Please contact the university directly to be sure.")
+    return _FALLBACKS.get(language_hint, _FALLBACKS["en"])
 
 
 def _looks_polish(text: str) -> bool:
@@ -120,17 +130,33 @@ def _openai_client(key: str):
     return OpenAI(api_key=key, base_url=settings.llm_base_url)
 
 
-def _answer_with_llm(question: str, context: str) -> str | None:
+# Languages the UI can force an answer in. Retrieval stays cross-lingual; only
+# the reply language changes. None/"auto" keeps the "same language as the
+# question" behaviour.
+LANGUAGE_NAMES = {"en": "English", "pl": "Polish", "uk": "Ukrainian", "tr": "Turkish"}
+
+
+def _answer_with_llm(question: str, context: str, language: str | None = None) -> str | None:
     key = llm_api_key()
     if not key:
         return None
+
+    system = SYSTEM_PROMPT
+    lang_name = LANGUAGE_NAMES.get((language or "").lower())
+    if lang_name:
+        # An explicit choice overrides the "answer in the question's language"
+        # rule, so a user can ask in one language and read the reply in another.
+        system += (
+            f"\n\nIMPORTANT: Regardless of the question's language, write your "
+            f"entire answer in {lang_name}."
+        )
 
     try:
         client = _openai_client(key)
         response = client.chat.completions.create(
             model=settings.llm_model,
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system},
                 {"role": "user",
                  "content": f"CONTEXT:\n{context}\n\n---\n\nQUESTION: {question}"},
             ],
@@ -143,18 +169,25 @@ def _answer_with_llm(question: str, context: str) -> str | None:
         return None
 
 
-def answer(question: str, *, top_k: int | None = None) -> dict:
-    """Answer *question*; always returns a payload, never raises."""
+def answer(question: str, *, top_k: int | None = None, language: str | None = None) -> dict:
+    """Answer *question*; always returns a payload, never raises.
+
+    *language* (en/pl/uk/tr) forces the reply language; None/"auto" mirrors the
+    question. Retrieval is cross-lingual regardless.
+    """
     started = time.perf_counter()
     top_k = top_k or settings.top_k
-    lang_hint = "pl" if _looks_polish(question) else "en"
+    # Language for the fallback message: the explicit choice, else detected.
+    reply_lang = (language or "").lower()
+    fallback_lang = reply_lang if reply_lang in _FALLBACKS else (
+        "pl" if _looks_polish(question) else "en")
 
     try:
         q_vec = embeddings.embed_query(question)
     except embeddings.EmbeddingError:
         logger.exception("query embedding failed")
         return {
-            "answer": _fallback_answer(lang_hint),
+            "answer": _fallback_answer(fallback_lang),
             "sources": [], "confidence": 0.0, "answered": False,
             "latency_ms": int((time.perf_counter() - started) * 1000),
         }
@@ -165,16 +198,16 @@ def answer(question: str, *, top_k: int | None = None) -> dict:
     # Confidence gate — weak retrieval means we do not have the answer.
     if not hits or top_sim < settings.min_similarity:
         latency = int((time.perf_counter() - started) * 1000)
-        query_id = db.log_query(question=question, language=lang_hint, answered=False,
+        query_id = db.log_query(question=question, language=fallback_lang, answered=False,
                                 top_similarity=top_sim, latency_ms=latency, sources=[])
         return {
-            "answer": _fallback_answer(lang_hint),
+            "answer": _fallback_answer(fallback_lang),
             "sources": [], "confidence": round(top_sim, 4), "answered": False,
             "latency_ms": latency, "query_id": query_id,
         }
 
     context, sources = _build_context(hits)
-    text = _answer_with_llm(question, context)
+    text = _answer_with_llm(question, context, language=language)
     answered = text is not None
     if not answered:
         text = _fallback_answer(lang_hint)

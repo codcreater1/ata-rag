@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -14,6 +16,8 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 class AskRequest(BaseModel):
     question: str = Field(min_length=2, max_length=2000)
     top_k: int | None = Field(default=None, ge=1, le=20)
+    # Force the reply language; omit or "auto" to mirror the question.
+    language: Literal["auto", "en", "pl", "uk", "tr"] | None = None
 
 
 class Source(BaseModel):
@@ -40,7 +44,8 @@ class FeedbackRequest(BaseModel):
 
 @router.post("/ask", response_model=AskResponse)
 def ask(request: AskRequest):
-    return rag.answer(request.question, top_k=request.top_k)
+    language = None if request.language in (None, "auto") else request.language
+    return rag.answer(request.question, top_k=request.top_k, language=language)
 
 
 @router.get("/suggestions")
