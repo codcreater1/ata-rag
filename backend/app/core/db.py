@@ -77,6 +77,13 @@ CREATE TABLE IF NOT EXISTS chunks (
 CREATE INDEX IF NOT EXISTS chunks_document_idx ON chunks(document_id);
 CREATE INDEX IF NOT EXISTS chunks_metadata_idx ON chunks USING GIN (metadata);
 
+-- Lexical half of hybrid retrieval. 'simple' rather than a language-specific
+-- configuration: the corpus mixes Polish, English and Ukrainian in one column,
+-- and no single stemmer fits all three. Exact tokens (programme names, "1000
+-- zł", "Erasmus") are what BM25 contributes here anyway.
+CREATE INDEX IF NOT EXISTS chunks_fts_idx
+    ON chunks USING GIN (to_tsvector('simple', text));
+
 CREATE TABLE IF NOT EXISTS queries (
     id            BIGSERIAL PRIMARY KEY,
     asked_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -86,8 +93,22 @@ CREATE TABLE IF NOT EXISTS queries (
     top_similarity REAL,
     latency_ms    INT,
     sources       JSONB NOT NULL DEFAULT '[]'::jsonb,
-    feedback      SMALLINT
+    feedback      SMALLINT,
+    prompt_tokens     INT,
+    completion_tokens INT
 );
+
+-- Which cited sources visitors actually open: the PDF spec asks for "top
+-- clicked sources", which is a different signal from "most cited" — it shows
+-- what people trust enough to go read.
+CREATE TABLE IF NOT EXISTS source_clicks (
+    id         BIGSERIAL PRIMARY KEY,
+    clicked_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    query_id   BIGINT REFERENCES queries(id) ON DELETE SET NULL,
+    url        TEXT NOT NULL,
+    title      TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS source_clicks_url_idx ON source_clicks(url);
 """
 
 # Built separately: ivfflat needs rows present to pick sensible lists, so we
@@ -122,10 +143,17 @@ END $$;
 """
 
 
+_MIGRATE_COLUMNS = """
+ALTER TABLE queries ADD COLUMN IF NOT EXISTS prompt_tokens INT;
+ALTER TABLE queries ADD COLUMN IF NOT EXISTS completion_tokens INT;
+"""
+
+
 def init_schema() -> None:
     with connection() as conn:
         conn.execute(SCHEMA % {"dim": settings.embedding_dim})
         conn.execute(_MIGRATE_UNIQUE)
+        conn.execute(_MIGRATE_COLUMNS)
         conn.commit()
     logger.info("schema ready")
 
@@ -211,15 +239,82 @@ def search(query_embedding: list[float], *, top_k: int, language: str | None = N
         return conn.execute(sql, params).fetchall()
 
 
-def log_query(*, question, language, answered, top_similarity, latency_ms, sources) -> int | None:
+# Reciprocal Rank Fusion constant. 60 is the value from the original RRF paper
+# and the usual default: large enough that the top few ranks score similarly,
+# so one retriever's confident hit is not automatically beaten by the other's.
+_RRF_K = 60
+
+
+def hybrid_search(query_embedding: list[float], query_text: str, *,
+                  top_k: int, candidates: int = 30) -> list[dict]:
+    """Vector + full-text search fused with Reciprocal Rank Fusion.
+
+    Dense retrieval matches meaning but drifts on rare literal tokens — exact
+    programme names, "Erasmus", a specific fee. Full-text nails those but misses
+    paraphrase. RRF combines the two rankings without needing their scores to be
+    on a comparable scale, which cosine distance and ts_rank are not.
+
+    ``similarity`` stays the cosine score so the confidence gate keeps its
+    meaning; a chunk found only by full-text carries its true (lower) cosine.
+    """
+    sql = """
+        WITH vec AS (
+            SELECT c.id,
+                   row_number() OVER (ORDER BY c.embedding <=> %(q)s::vector) AS rank
+              FROM chunks c
+             WHERE c.embedding IS NOT NULL
+             ORDER BY c.embedding <=> %(q)s::vector
+             LIMIT %(cand)s
+        ),
+        fts AS (
+            SELECT c.id,
+                   row_number() OVER (
+                       ORDER BY ts_rank(to_tsvector('simple', c.text),
+                                        plainto_tsquery('simple', %(qt)s)) DESC
+                   ) AS rank
+              FROM chunks c
+             WHERE to_tsvector('simple', c.text) @@ plainto_tsquery('simple', %(qt)s)
+             LIMIT %(cand)s
+        ),
+        fused AS (
+            SELECT COALESCE(vec.id, fts.id) AS id,
+                   COALESCE(1.0 / (%(rrf)s + vec.rank), 0)
+                 + COALESCE(1.0 / (%(rrf)s + fts.rank), 0) AS score
+              FROM vec FULL OUTER JOIN fts ON vec.id = fts.id
+        )
+        SELECT c.text,
+               c.metadata,
+               d.url,
+               d.title,
+               d.language,
+               1 - (c.embedding <=> %(q)s::vector) AS similarity,
+               fused.score AS fusion_score
+          FROM fused
+          JOIN chunks c ON c.id = fused.id
+          JOIN documents d ON d.id = c.document_id
+         ORDER BY fused.score DESC
+         LIMIT %(k)s
+    """
+    params = {
+        "q": str(query_embedding), "qt": query_text,
+        "k": top_k, "cand": candidates, "rrf": _RRF_K,
+    }
+    with connection() as conn:
+        return conn.execute(sql, params).fetchall()
+
+
+def log_query(*, question, language, answered, top_similarity, latency_ms, sources,
+              prompt_tokens=None, completion_tokens=None) -> int | None:
     try:
         with connection() as conn:
             row = conn.execute(
                 """INSERT INTO queries (question, language, answered, top_similarity,
-                                        latency_ms, sources)
-                   VALUES (%s,%s,%s,%s,%s,%s) RETURNING id""",
+                                        latency_ms, sources, prompt_tokens,
+                                        completion_tokens)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
                 (question, language, answered, top_similarity, latency_ms,
-                 json.dumps(sources, ensure_ascii=False)),
+                 json.dumps(sources, ensure_ascii=False), prompt_tokens,
+                 completion_tokens),
             ).fetchone()
             conn.commit()
             return row["id"]
@@ -227,3 +322,17 @@ def log_query(*, question, language, answered, top_similarity, latency_ms, sourc
         # Analytics must never break answering.
         logger.exception("could not log query")
         return None
+
+
+def log_source_click(*, url: str, title: str = "", query_id: int | None = None) -> None:
+    """Record that a visitor opened a cited source. Never raises — analytics
+    must not break the page."""
+    try:
+        with connection() as conn:
+            conn.execute(
+                "INSERT INTO source_clicks (query_id, url, title) VALUES (%s,%s,%s)",
+                (query_id, url, title),
+            )
+            conn.commit()
+    except psycopg.Error:
+        logger.exception("could not log source click")

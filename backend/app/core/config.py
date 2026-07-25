@@ -31,10 +31,10 @@ class Settings(BaseSettings):
     # ---------------------------------------------------------------- #
     # Retrieval
     # ---------------------------------------------------------------- #
-    top_k: int = 8
+    top_k: int = 10          # the PDF spec's "top 10 chunks"
     # Below this cosine similarity the context is treated as "not found" and the
-    # bot says so instead of guessing from weak matches.
-    min_similarity: float = 0.55
+    # bot says so instead of guessing from weak matches (spec: < 0.65).
+    min_similarity: float = 0.65
 
     # gemini-embedding-001 defaults to 3072 dims but supports Matryoshka
     # truncation; 768 keeps the pgvector index small with negligible quality
