@@ -21,6 +21,40 @@ OVERLAP_CHARS = 150     # carried between sub-splits so sentences aren't orphane
 
 _HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
 
+# ATA teaches within exactly two faculties. Tagging each chunk with the one it
+# belongs to lets retrieval be filtered by faculty later (PDF spec, metadata).
+# Derived from the programme wording because the faculty pages render their
+# programme lists client-side, so there is no authoritative list in the HTML —
+# anything that does not clearly match is left untagged rather than guessed.
+FACULTY_ARCHITECTURE = "Architecture"
+FACULTY_ENGINEERING = "Engineering and Management"
+
+_FACULTY_KEYWORDS = (
+    (FACULTY_ARCHITECTURE, (
+        "architektur", "architecture", "архітектур", "архитектур",
+        "wnętrz", "interior", "wzornictw", "design", "krajobraz", "landscape",
+        "grafik", "graphic", "animacj", "animation", "sztuk", "art",
+    )),
+    (FACULTY_ENGINEERING, (
+        "informatyk", "computer", "інформатик", "информатик",
+        "budownictw", "civil", "mechanic", "mechanik", "inżynier", "engineering",
+        "zarządzan", "management", "менеджмент", "logistyk", "logistics",
+        "ochrona środowiska", "environment", "energi", "energy",
+        "cyberbez", "cybersecurity", "sieci", "network", "programowan",
+        "sztuczna inteligencja", "artificial intelligence", "bezpieczeństw",
+        "turystyk", "tourism", "marketing", "sprzedaż", "biznes", "business",
+    )),
+)
+
+
+def faculty_of(text: str) -> str | None:
+    """Best-effort faculty for a programme title/URL, or None when unclear."""
+    low = text.lower()
+    for faculty, keywords in _FACULTY_KEYWORDS:
+        if any(k in low for k in keywords):
+            return faculty
+    return None
+
 
 @dataclass
 class Chunk:
@@ -139,6 +173,9 @@ def chunk_page(page) -> list[Chunk]:
                     "section": heading_path,
                     "language": page.language,
                     "source_type": page.source_type,
+                    "faculty": faculty_of(f"{page.title} {page.url}"),
+                    "lastUpdated": page.lastmod or None,
+                    "source": "website",
                     **(page.metadata or {}),
                 },
             ))
