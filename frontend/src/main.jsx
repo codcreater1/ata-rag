@@ -5,13 +5,15 @@ import Chat from "./Chat";
 import Dashboard from "./Dashboard";
 import "./styles.css";
 
-// The site itself is published in these languages; "auto" mirrors whatever the
-// visitor typed, which is the sensible default.
+// EN/PL/UK mirror the languages the site itself is published in; TR is offered
+// for the university's Turkish students. "auto" mirrors whatever the visitor
+// typed, which is the sensible default.
 const LANGUAGES = [
   { code: "auto", label: "Auto" },
   { code: "en", label: "EN" },
   { code: "pl", label: "PL" },
   { code: "uk", label: "UK" },
+  { code: "tr", label: "TR" },
 ];
 
 function App() {
