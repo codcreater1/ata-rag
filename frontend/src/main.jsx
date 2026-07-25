@@ -22,11 +22,16 @@ function App() {
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <span className="logo">🐻</span>
-          <div>
-            <strong>ATA Assistant</strong>
-            <small>Akademia Techniczno-Artystyczna</small>
-          </div>
+          {/* The official mark already carries the university's name, so it
+              stands alone; "Assistant" only labels what this tool is. */}
+          <img
+            className="logo"
+            src="/ata-logo.webp"
+            alt="Akademia Techniczno-Artystyczna Nauk Stosowanych w Warszawie"
+            width="271"
+            height="56"
+          />
+          <span className="brandTag">Assistant</span>
         </div>
 
         <div className="topRight">

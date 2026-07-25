@@ -48,16 +48,17 @@ body {
   padding: 12px 20px; background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
-.brand { display: flex; align-items: center; gap: 12px; }
-.logo {
-  font-size: 22px;
-  width: 40px; height: 40px;
-  display: grid; place-items: center;
-  border-radius: 11px;
-  background: var(--accent-soft);
-  border: 1px solid var(--accent);
+.brand { display: flex; align-items: center; gap: 10px; }
+.logo { height: 34px; width: auto; display: block; }
+.brandTag {
+  font-size: 12px; font-weight: 700; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--accent-strong);
+  padding: 3px 8px; border-radius: 6px; background: var(--accent-soft);
 }
-.brand strong { color: var(--accent-strong); }
+/* The mark is dark type on transparent; lift it on dark backgrounds. */
+@media (prefers-color-scheme: dark) {
+  .logo { filter: brightness(0) invert(1) sepia(1) saturate(4) hue-rotate(335deg); }
+}
 .brand strong { display: block; font-size: 15px; }
 .brand small { color: var(--muted); font-size: 12px; }
 .topRight { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
@@ -164,3 +165,5 @@ body {
 
 .app .thread::-webkit-scrollbar, .dashboard::-webkit-scrollbar { width: 8px; }
 .app .thread::-webkit-scrollbar-thumb, .dashboard::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+.welcomeLogo { width: 72px; height: 72px; object-fit: contain; }

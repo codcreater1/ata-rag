@@ -80,7 +80,7 @@ export default function Chat({ language = "auto" }) {
       <div className="thread">
         {empty && (
           <div className="welcome">
-            <div className="welcomeIcon">🐻</div>
+            <img className="welcomeLogo" src="/ata-bear.png" alt="" width="72" height="72" />
             <h2>Ask about studying at ATA</h2>
             <p>
               Tuition, admissions, programmes, student services — answered from the
