@@ -14,6 +14,7 @@ from app.core import db, embeddings
 from app.core.config import settings
 from app.ingest.chunker import chunk_page
 from app.ingest.crawler import crawl
+from app.ingest.pdfs import crawl_pdfs
 from app.ingest.prices import build_price_pages
 
 logger = logging.getLogger(__name__)
@@ -24,13 +25,24 @@ def _hash(text: str) -> str:
 
 
 def run(*, limit: int | None = None, skip_crawl: bool = False,
-        force: bool = False) -> dict:
+        force: bool = False, pdf_limit: int | None = None) -> dict:
     """Index the site. Returns a summary for the dashboard / logs."""
     db.init_schema()
 
     pages = []
     if not skip_crawl:
-        pages += crawl(limit=limit, delay=settings.crawl_delay_seconds)
+        # Collect PDF links while crawling, then ingest them: regulations, fee
+        # tables and forms are published as PDFs and are invisible to an
+        # HTML-only crawl.
+        pdf_links: set[str] = set()
+        pages += crawl(limit=limit, delay=settings.crawl_delay_seconds,
+                       collect_pdf_links=pdf_links)
+        if pdf_links:
+            try:
+                pages += crawl_pdfs(pdf_links, delay=settings.crawl_delay_seconds,
+                                    limit=pdf_limit)
+            except Exception:
+                logger.exception("PDF ingestion failed; continuing with pages")
     # Tuition cards are cheap and always worth refreshing — fees change.
     try:
         pages += build_price_pages()
@@ -42,7 +54,7 @@ def run(*, limit: int | None = None, skip_crawl: bool = False,
 
     # Embed the highest-value pages first so a day capped by the free-tier quota
     # still covers tuition, programmes and admissions before news posts.
-    priority = {"tuition": 0, "page": 1, "bachelor": 2, "master": 2,
+    priority = {"tuition": 0, "page": 1, "pdf": 2, "bachelor": 2, "master": 2,
                 "postgraduate": 3, "mba": 3, "courses": 3, "faq": 1,
                 "contact": 4, "exams": 4, "post": 9}
     pages.sort(key=lambda p: priority.get(p.source_type, 5))
@@ -103,6 +115,8 @@ if __name__ == "__main__":
                         help="refresh tuition data only")
     parser.add_argument("--force", action="store_true",
                         help="re-embed even unchanged pages")
+    parser.add_argument("--pdf-limit", type=int, help="cap linked PDFs ingested")
     args = parser.parse_args()
 
-    print(run(limit=args.limit, skip_crawl=args.skip_crawl, force=args.force))
+    print(run(limit=args.limit, skip_crawl=args.skip_crawl, force=args.force,
+              pdf_limit=args.pdf_limit))

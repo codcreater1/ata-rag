@@ -141,8 +141,16 @@ def _extract(html: str, url: str) -> tuple[str, str]:
     return title, (md or "").strip()
 
 
-def crawl(limit: int | None = None, delay: float = 0.4) -> list[Page]:
-    """Crawl content pages. *limit* caps pages (useful for smoke tests)."""
+def crawl(limit: int | None = None, delay: float = 0.4,
+          collect_pdf_links: set[str] | None = None) -> list[Page]:
+    """Crawl content pages. *limit* caps pages (useful for smoke tests).
+
+    Pass a set as *collect_pdf_links* to also gather every linked PDF URL seen
+    along the way; the caller can then ingest those separately (regulations and
+    fee tables are published as PDFs, not pages).
+    """
+    from app.ingest.pdfs import discover_pdf_links
+
     pages: list[Page] = []
     with httpx.Client() as client:
         targets = _sitemap_urls(client)
@@ -154,6 +162,9 @@ def crawl(limit: int | None = None, delay: float = 0.4) -> list[Page]:
             html = _get(client, url)
             if not html:
                 continue
+
+            if collect_pdf_links is not None:
+                collect_pdf_links |= discover_pdf_links(html, url)
 
             title, md = _extract(html, url)
             # Very short extractions are nav-only stubs, not content.
