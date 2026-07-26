@@ -115,6 +115,34 @@ def _looks_polish(text: str) -> bool:
     return len(words & set(re.findall(r"[a-ząćęłńóśźż]+", text.lower()))) >= 2
 
 
+# Turkish letters no other of our four languages use (Polish has ó but not the
+# rest), plus common function words for questions with no special character.
+_TR_CHARS = re.compile(r"[şğıİ]")
+_TR_WORDS = {"hakkında", "istiyorum", "nasıl", "nedir", "için", "başvuru",
+             "başvurmak", "kaç", "ne", "mı", "mi", "mu", "mü", "var", "nerede",
+             "üniversite", "öğrenci", "merhaba", "selam", "ücret", "bölüm",
+             "gerekli", "belge", "kayıt", "sınav"}
+
+
+def _detect_language(text: str) -> str:
+    """Best-effort language of a question: en / pl / uk / tr.
+
+    Used only to hold the reply to the question's language when the user left
+    the picker on Auto. The weaker fallback models otherwise drift into the
+    context's language — a Turkish student asking about Erasmus (Polish source
+    pages) would get a Polish answer. Conservative on purpose: an unsure guess
+    resolves to English, and the model's own same-language habit takes over.
+    """
+    if re.search(r"[Ѐ-ӿ]", text):          # Cyrillic → Ukrainian
+        return "uk"
+    low = text.lower()
+    if _TR_CHARS.search(text) or _TR_WORDS & set(re.findall(r"\w+", low)):
+        return "tr"
+    if _looks_polish(text):
+        return "pl"
+    return "en"
+
+
 def _build_context(hits: list[dict], budget: int = 9000) -> tuple[str, list[dict]]:
     """Assemble numbered context blocks and the matching source list."""
     blocks: list[str] = []
@@ -322,13 +350,17 @@ def _retrieval_query(question: str, history: list[dict] | None) -> str:
 def _messages(question: str, context: str, language: str | None,
               history: list[dict] | None) -> list[dict]:
     system = SYSTEM_PROMPT
-    lang_name = LANGUAGE_NAMES.get((language or "").lower())
+    # A picker choice wins; on Auto, detect the question's language and pin it
+    # anyway. The instruction is what keeps a weaker fallback model from
+    # answering in the context's language instead of the reader's.
+    reply_lang = (language or "").lower()
+    if reply_lang not in LANGUAGE_NAMES:
+        reply_lang = _detect_language(question)
+    lang_name = LANGUAGE_NAMES.get(reply_lang)
     if lang_name:
-        # An explicit choice overrides the "answer in the question's language"
-        # rule, so a user can ask in one language and read the reply in another.
         system += (
-            f"\n\nIMPORTANT: Regardless of the question's language, write your "
-            f"entire answer in {lang_name}."
+            f"\n\nIMPORTANT: Regardless of the language of the context or the "
+            f"question, write your entire answer in {lang_name}."
         )
 
     # Prior turns go in as real conversation turns so the model can resolve
@@ -340,9 +372,13 @@ def _messages(question: str, context: str, language: str | None,
         content = (turn.get("content") or "").strip()
         if role in ("user", "assistant") and content:
             messages.append({"role": role, "content": content[:2000]})
+    # The language directive is repeated on the user turn, not just the system
+    # one: the weak fallback models follow an instruction sitting next to the
+    # question far more reliably than one buried in a long system prompt.
+    tail = f"\n\n(Write the answer in {lang_name}.)" if lang_name else ""
     messages.append({
         "role": "user",
-        "content": f"CONTEXT:\n{context}\n\n---\n\nQUESTION: {question}",
+        "content": f"CONTEXT:\n{context}\n\n---\n\nQUESTION: {question}{tail}",
     })
     return messages
 
@@ -401,8 +437,7 @@ def answer(question: str, *, top_k: int | None = None, language: str | None = No
     top_k = top_k or settings.top_k
     # Language for the fallback message: the explicit choice, else detected.
     reply_lang = (language or "").lower()
-    fallback_lang = reply_lang if reply_lang in _FALLBACKS else (
-        "pl" if _looks_polish(question) else "en")
+    fallback_lang = reply_lang if reply_lang in _FALLBACKS else _detect_language(question)
 
     search_text = _retrieval_query(question, history)
     hits, top_sim, degraded = _retrieve(search_text, top_k)
@@ -456,8 +491,7 @@ def _prepare(question: str, top_k: int | None, language: str | None,
     top_similarity is None in BM25-only mode; degraded flags that mode."""
     top_k = top_k or settings.top_k
     reply_lang = (language or "").lower()
-    fallback_lang = reply_lang if reply_lang in _FALLBACKS else (
-        "pl" if _looks_polish(question) else "en")
+    fallback_lang = reply_lang if reply_lang in _FALLBACKS else _detect_language(question)
 
     search_text = _retrieval_query(question, history)
     hits, top_sim, degraded = _retrieve(search_text, top_k)
