@@ -121,6 +121,34 @@ def _build_context(hits: list[dict], budget: int = 9000) -> tuple[str, list[dict
     return "\n\n---\n\n".join(blocks), sources
 
 
+def _flush_traces() -> None:
+    """Push buffered traces to LangFuse.
+
+    The SDK batches events and relies on a periodic flush plus one at process
+    exit, which a server never reaches. Traces did arrive without this, but
+    minutes late — long enough to look broken while debugging a live answer.
+    Flushing after each answer makes them show up in seconds instead.
+
+    Runs on a daemon thread: flush is a blocking network call and must not sit
+    between the user and their answer.
+    """
+    import os
+    import threading
+
+    if not (os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY")):
+        return
+
+    def _do():
+        try:
+            from langfuse import get_client
+
+            get_client().flush()
+        except Exception:
+            logger.debug("trace flush failed", exc_info=True)
+
+    threading.Thread(target=_do, daemon=True).start()
+
+
 def _openai_client(key: str):
     """OpenAI-compatible client, wrapped by LangFuse when its keys are set so
     every answer call is traced (retrieval already logged to the queries table).
@@ -318,6 +346,7 @@ def answer(question: str, *, top_k: int | None = None, language: str | None = No
 
     context, sources = _build_context(hits)
     text, usage = _answer_with_llm(question, context, language=language, history=history)
+    _flush_traces()
     answered = text is not None
     if not answered:
         text = _fallback_answer(fallback_lang)
@@ -451,6 +480,8 @@ def stream(question: str, *, top_k: int | None = None, language: str | None = No
                     yield f"event: token\ndata: {json.dumps({'text': piece})}\n\n"
         except Exception:
             logger.exception("streaming failed")
+        finally:
+            _flush_traces()
 
     answered = bool(collected)
     if not answered:
