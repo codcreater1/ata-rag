@@ -363,14 +363,19 @@ def text_search(query_text: str, *, top_k: int) -> list[dict]:
     ts = _or_tsquery(query_text)
     if not ts:
         return []
-    sql = """
+    # Weight the title above the body (setweight A vs B). Without it a chatty
+    # programme page that repeats "computer engineering" outranks the tuition
+    # card actually titled "Tuition — Computer Engineering", so the fee numbers
+    # never reach the context. With it the cards surface for a tuition question.
+    doc = ("setweight(to_tsvector('simple', d.title), 'A') || "
+           "setweight(to_tsvector('simple', c.text), 'B')")
+    sql = f"""
         SELECT c.text, c.metadata, d.url, d.title, d.language,
                NULL::float AS similarity,
-               ts_rank(to_tsvector('simple', c.text),
-                       to_tsquery('simple', %(ts)s)) AS fusion_score
+               ts_rank({doc}, to_tsquery('simple', %(ts)s)) AS fusion_score
           FROM chunks c
           JOIN documents d ON d.id = c.document_id
-         WHERE to_tsvector('simple', c.text) @@ to_tsquery('simple', %(ts)s)
+         WHERE {doc} @@ to_tsquery('simple', %(ts)s)
          ORDER BY fusion_score DESC
          LIMIT %(k)s
     """
