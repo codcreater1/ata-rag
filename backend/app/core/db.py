@@ -204,6 +204,36 @@ def upsert_document(conn, *, url, title, language, source_type, lastmod,
     return new["id"], True
 
 
+def indexed_lastmods() -> dict[str, str]:
+    """`{url: lastmod}` for pages that are fully indexed.
+
+    The crawler compares these against the sitemap so an unchanged page is never
+    fetched again. Only documents that actually have chunks count: one whose
+    embeddings never landed must be retried, not skipped forever.
+    """
+    with connection() as conn:
+        rows = conn.execute(
+            """SELECT d.url, d.lastmod FROM documents d
+                WHERE d.lastmod <> ''
+                  AND EXISTS (SELECT 1 FROM chunks c WHERE c.document_id = d.id)"""
+        ).fetchall()
+    return {r["url"]: r["lastmod"] for r in rows}
+
+
+def known_pdf_urls() -> set[str]:
+    """PDF URLs discovered by earlier runs.
+
+    PDF links are found by reading the pages that link to them. Once the crawler
+    starts skipping unchanged pages it stops re-seeing those links, so the set
+    has to persist across runs or the PDFs would drop out of the index.
+    """
+    with connection() as conn:
+        rows = conn.execute(
+            "SELECT url FROM documents WHERE source_type = 'pdf'"
+        ).fetchall()
+    return {r["url"] for r in rows}
+
+
 def replace_chunks(conn, document_id: int, rows: list[tuple[int, str, list[float], dict]]) -> None:
     """Swap in a document's chunks (delete-then-insert keeps it simple)."""
     conn.execute("DELETE FROM chunks WHERE document_id = %s", (document_id,))

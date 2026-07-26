@@ -1,8 +1,10 @@
 """Full ingestion run: crawl + tuition data -> chunks -> embeddings -> Postgres.
 
-Runs as a Coolify scheduled task (nightly). Pages whose extracted markdown is
-byte-identical to the stored copy are skipped, so a routine run re-embeds only
-what actually changed instead of the whole site.
+Runs as a Coolify scheduled task (nightly), and skips unchanged work twice over:
+the sitemap's ``lastmod`` keeps an unmodified page from being fetched at all,
+and a content hash keeps a page whose markdown came back identical from being
+re-embedded. A routine run therefore costs minutes and almost no quota, instead
+of half an hour and the whole site's worth of embeddings.
 """
 
 from __future__ import annotations
@@ -25,18 +27,27 @@ def _hash(text: str) -> str:
 
 
 def run(*, limit: int | None = None, skip_crawl: bool = False,
-        force: bool = False, pdf_limit: int | None = None) -> dict:
-    """Index the site. Returns a summary for the dashboard / logs."""
+        force: bool = False, pdf_limit: int | None = None,
+        full: bool = False) -> dict:
+    """Index the site. Returns a summary for the dashboard / logs.
+
+    By default the crawl trusts the sitemap's ``lastmod`` and refetches only
+    pages that changed. Pass *full* to refetch everything — worth doing after a
+    change to extraction or chunking, where the source page is identical but our
+    reading of it is not.
+    """
     db.init_schema()
 
     pages = []
     if not skip_crawl:
         # Collect PDF links while crawling, then ingest them: regulations, fee
         # tables and forms are published as PDFs and are invisible to an
-        # HTML-only crawl.
-        pdf_links: set[str] = set()
+        # HTML-only crawl. Seed with the ones already known, since the pages
+        # that link to them are usually skipped as unmodified.
+        pdf_links: set[str] = set() if full else db.known_pdf_urls()
         pages += crawl(limit=limit, delay=settings.crawl_delay_seconds,
-                       collect_pdf_links=pdf_links)
+                       collect_pdf_links=pdf_links,
+                       known_lastmod=None if full else db.indexed_lastmods())
         if pdf_links:
             try:
                 pages += crawl_pdfs(pdf_links, delay=settings.crawl_delay_seconds,
@@ -110,6 +121,12 @@ def run(*, limit: int | None = None, skip_crawl: bool = False,
 if __name__ == "__main__":
     import argparse
 
+    from dotenv import load_dotenv
+
+    # Coolify injects the environment, but a local run has only .env — and the
+    # API server is the only other thing that loads it.
+    load_dotenv()
+
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
     parser = argparse.ArgumentParser(description="Index akademiata.pl into pgvector")
@@ -119,7 +136,9 @@ if __name__ == "__main__":
     parser.add_argument("--force", action="store_true",
                         help="re-embed even unchanged pages")
     parser.add_argument("--pdf-limit", type=int, help="cap linked PDFs ingested")
+    parser.add_argument("--full", action="store_true",
+                        help="refetch every page instead of trusting sitemap lastmod")
     args = parser.parse_args()
 
     print(run(limit=args.limit, skip_crawl=args.skip_crawl, force=args.force,
-              pdf_limit=args.pdf_limit))
+              pdf_limit=args.pdf_limit, full=args.full))

@@ -142,16 +142,24 @@ def _extract(html: str, url: str) -> tuple[str, str]:
 
 
 def crawl(limit: int | None = None, delay: float = 0.4,
-          collect_pdf_links: set[str] | None = None) -> list[Page]:
+          collect_pdf_links: set[str] | None = None,
+          known_lastmod: dict[str, str] | None = None) -> list[Page]:
     """Crawl content pages. *limit* caps pages (useful for smoke tests).
 
     Pass a set as *collect_pdf_links* to also gather every linked PDF URL seen
     along the way; the caller can then ingest those separately (regulations and
     fee tables are published as PDFs, not pages).
+
+    Pass *known_lastmod* (`{url: lastmod}` from the last run) to skip fetching
+    pages the sitemap reports as unmodified. Fetching all ~1300 pages takes
+    close to half an hour and almost none of them change between nightly runs;
+    trusting lastmod turns the routine run into a couple of minutes.
     """
     from app.ingest.pdfs import discover_pdf_links
 
+    known_lastmod = known_lastmod or {}
     pages: list[Page] = []
+    unchanged = 0
     with httpx.Client() as client:
         targets = _sitemap_urls(client)
         logger.info("sitemap listed %d content URLs", len(targets))
@@ -159,6 +167,11 @@ def crawl(limit: int | None = None, delay: float = 0.4,
             targets = targets[:limit]
 
         for i, (url, lastmod, source_type) in enumerate(targets, 1):
+            # No lastmod means the sitemap can't vouch for the page — fetch it.
+            if lastmod and known_lastmod.get(url) == lastmod:
+                unchanged += 1
+                continue
+
             html = _get(client, url)
             if not html:
                 continue
@@ -180,4 +193,6 @@ def crawl(limit: int | None = None, delay: float = 0.4,
                 logger.info("crawled %d/%d", i, len(targets))
             time.sleep(delay)
 
+    if unchanged:
+        logger.info("skipped %d unmodified pages (sitemap lastmod)", unchanged)
     return pages
