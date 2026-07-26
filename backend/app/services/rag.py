@@ -286,10 +286,10 @@ def answer(question: str, *, top_k: int | None = None, language: str | None = No
     text, usage = _answer_with_llm(question, context, language=language, history=history)
     answered = text is not None
     if not answered:
-        text = _fallback_answer(lang_hint)
+        text = _fallback_answer(fallback_lang)
 
     latency = int((time.perf_counter() - started) * 1000)
-    query_id = db.log_query(question=question, language=lang_hint, answered=answered,
+    query_id = db.log_query(question=question, language=fallback_lang, answered=answered,
                             top_similarity=top_sim, latency_ms=latency, sources=sources)
 
     return {
@@ -336,6 +336,13 @@ def stream(question: str, *, top_k: int | None = None, language: str | None = No
     import json
 
     started = time.perf_counter()
+
+    # Flush a comment frame before doing any work. Retrieval plus the model's
+    # time-to-first-token can be several seconds, and an intermediary that sees
+    # no bytes in that window drops the connection (Cloudflare answered 502).
+    # A leading comment establishes the stream immediately; SSE clients ignore it.
+    yield ": stream open\n\n"
+
     hits, context, sources, top_sim, fallback_lang = _prepare(
         question, top_k, language, history)
 
