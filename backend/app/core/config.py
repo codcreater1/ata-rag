@@ -33,8 +33,17 @@ class Settings(BaseSettings):
     # ---------------------------------------------------------------- #
     top_k: int = 10          # the PDF spec's "top 10 chunks"
     # Below this cosine similarity the context is treated as "not found" and the
-    # bot says so instead of guessing from weak matches (spec: < 0.65).
-    min_similarity: float = 0.65
+    # bot says so instead of guessing from weak matches.
+    #
+    # The specification suggests 0.65, but that figure is calibrated for OpenAI
+    # text-embedding-3-small; gemini-embedding-001 places its scores lower.
+    # Measured against the live index:
+    #     answerable questions   0.613 – 0.781  (min: "Erasmus exchange programme")
+    #     irrelevant questions   0.521 – 0.579  (max: "how much is the rector's dog")
+    # 0.65 sat above the weakest genuine question and rejected it. 0.60 sits in
+    # the gap: every real question passes, every nonsense one is still refused.
+    # Re-measure this if the embedding model changes.
+    min_similarity: float = 0.60
 
     # gemini-embedding-001 defaults to 3072 dims but supports Matryoshka
     # truncation; 768 keeps the pgvector index small with negligible quality
