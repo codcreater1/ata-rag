@@ -110,7 +110,9 @@ body {
 }
 .msg.user .bubble { background: var(--user-bubble); color: var(--user-text); border-bottom-right-radius: 4px; }
 .msg.assistant .bubble { background: var(--panel); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
-.answer { margin: 0; white-space: pre-wrap; }
+/* Structure comes from the Markdown renderer now, so no pre-wrap: it would
+   turn the source's own line breaks into stray blank space. */
+.answer { margin: 0; }
 
 .sources { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--border); display: flex; flex-direction: column; gap: 5px; }
 .sourcesLabel { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
@@ -137,7 +139,7 @@ body {
 .composer { display: flex; gap: 10px; padding: 16px 20px; border-top: 1px solid var(--border); background: var(--panel); }
 .composer input { flex: 1; padding: 12px 15px; border: 1px solid var(--border); border-radius: 12px; font-size: 14.5px; background: var(--bg); color: var(--text); font-family: inherit; }
 .composer input:focus { outline: none; border-color: var(--accent); }
-.composer button { display: grid; place-items: center; width: 46px; border: none; border-radius: 12px; background: var(--accent); color: #fff; cursor: pointer; }
+.sendBtn { display: grid; place-items: center; width: 46px; border: none; border-radius: 12px; background: var(--accent); color: #fff; cursor: pointer; }
 .composer button:disabled { opacity: .5; cursor: not-allowed; }
 
 /* ---- dashboard ---- */
@@ -179,3 +181,40 @@ body {
   animation: caretBlink 1s step-end infinite;
 }
 @keyframes caretBlink { 50% { opacity: 0; } }
+
+/* ---- markdown in answers ---- */
+.md > *:first-child { margin-top: 0; }
+.md > *:last-child { margin-bottom: 0; }
+.mdPara { margin: 0 0 8px; }
+.mdHeading { margin: 0 0 6px; font-weight: 700; }
+.mdList { margin: 0 0 8px; padding-left: 20px; }
+.mdList li { margin-bottom: 4px; }
+.md code {
+  font-family: ui-monospace, Consolas, monospace; font-size: 0.9em;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 4px; padding: 1px 5px;
+}
+.md a { color: var(--accent); }
+
+/* ---- new chat, copy, cached badge ---- */
+.newChat {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 0 14px; border: 1px solid var(--border); border-radius: 12px;
+  background: transparent; color: var(--muted);
+  font-size: 13px; font-weight: 600; font-family: inherit; cursor: pointer;
+  white-space: nowrap;
+}
+.newChat:hover { color: var(--accent); border-color: var(--accent); }
+
+.iconAction {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11.5px; color: var(--muted);
+  background: transparent; border: 1px solid var(--border);
+  border-radius: 7px; padding: 3px 8px; cursor: pointer; font-family: inherit;
+}
+.iconAction:hover { color: var(--accent); border-color: var(--accent); }
+
+.badge.cached {
+  display: inline-flex; align-items: center; gap: 3px;
+  color: var(--muted); background: var(--bg); border: 1px solid var(--border);
+}

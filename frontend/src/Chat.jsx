@@ -1,7 +1,34 @@
 import { useEffect, useRef, useState } from "react";
-import { ExternalLink, Send, ThumbsDown, ThumbsUp } from "lucide-react";
+import {
+  Check, Copy, ExternalLink, PlusCircle, Send, ThumbsDown, ThumbsUp, Zap,
+} from "lucide-react";
 
 import { askStream, getSuggestions, sendFeedback, trackSourceClick } from "./api";
+import Markdown from "./Markdown";
+
+function CopyButton({ text }) {
+  const [copied, setCopied] = useState(false);
+  if (!text) return null;
+
+  return (
+    <button
+      className="iconAction"
+      title="Copy answer"
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(text);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        } catch {
+          /* clipboard unavailable (insecure context) — nothing useful to do */
+        }
+      }}
+    >
+      {copied ? <Check size={13} /> : <Copy size={13} />}
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
 
 function Sources({ sources, queryId }) {
   if (!sources?.length) return null;
@@ -60,6 +87,13 @@ export default function Chat({ language = "auto" }) {
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, busy]);
+
+  function newChat() {
+    // Conversation memory means an old topic keeps colouring follow-ups, so a
+    // clean slate has to be one click away.
+    setMessages([]);
+    setInput("");
+  }
 
   async function submit(question) {
     const q = (question ?? input).trim();
@@ -135,10 +169,10 @@ export default function Chat({ language = "auto" }) {
                 {m.streaming && !m.answer ? (
                   <span className="typing"><i></i><i></i><i></i></span>
                 ) : (
-                  <p className="answer">
-                    {m.answer}
+                  <div className="answer">
+                    <Markdown text={m.answer} />
                     {m.streaming && <span className="caret" />}
-                  </p>
+                  </div>
                 )}
                 <Sources sources={m.sources} queryId={m.query_id} />
                 {m.confidence != null && (
@@ -146,12 +180,18 @@ export default function Chat({ language = "auto" }) {
                     <span className={`badge ${m.answered ? "ok" : "warn"}`}>
                       {m.answered ? "answered" : "not found"}
                     </span>
+                    {m.cached && (
+                      <span className="badge cached" title="Served from cache">
+                        <Zap size={10} /> cached
+                      </span>
+                    )}
                     {m.confidence != null && (
                       <span className="dim">match {(m.confidence * 100).toFixed(0)}%</span>
                     )}
                     {m.latency_ms != null && (
                       <span className="dim">{m.latency_ms} ms</span>
                     )}
+                    {m.answered && <CopyButton text={m.answer} />}
                     <Feedback queryId={m.query_id} />
                   </div>
                 )}
@@ -171,13 +211,24 @@ export default function Chat({ language = "auto" }) {
           submit();
         }}
       >
+        {!empty && (
+          <button
+            type="button"
+            className="newChat"
+            onClick={newChat}
+            disabled={busy}
+            title="Start a new conversation"
+          >
+            <PlusCircle size={16} /> New
+          </button>
+        )}
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
           placeholder="Ask about tuition, admissions, programmes…"
           disabled={busy}
         />
-        <button type="submit" disabled={busy || !input.trim()}>
+        <button type="submit" className="sendBtn" disabled={busy || !input.trim()}>
           <Send size={18} />
         </button>
       </form>
