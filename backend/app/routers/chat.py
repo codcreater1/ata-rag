@@ -32,13 +32,16 @@ class Source(BaseModel):
     n: int
     title: str
     url: str
-    similarity: float
+    # None when retrieval ran BM25-only (embedding quota spent): there is no
+    # cosine score to report.
+    similarity: float | None = None
 
 
 class AskResponse(BaseModel):
     answer: str
     sources: list[Source]
-    confidence: float
+    # None in BM25-only mode — see Source.similarity.
+    confidence: float | None = None
     answered: bool
     latency_ms: int
     # None when analytics logging failed — feedback is then simply unavailable.

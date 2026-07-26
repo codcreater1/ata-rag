@@ -190,7 +190,10 @@ export default function Chat({ language = "auto" }) {
                   </div>
                 )}
                 <Sources sources={m.sources} queryId={m.query_id} />
-                {m.confidence != null && (
+                {/* Gate on the response being finished, not on confidence:
+                    BM25-only answers have no cosine score but still need their
+                    answered badge, copy button and feedback. */}
+                {!m.streaming && m.latency_ms != null && (
                   <div className="metaRow">
                     <span className={`badge ${m.answered ? "ok" : "warn"}`}>
                       {m.answered ? "answered" : "not found"}

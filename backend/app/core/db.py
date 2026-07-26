@@ -333,6 +333,51 @@ def hybrid_search(query_embedding: list[float], query_text: str, *,
         return conn.execute(sql, params).fetchall()
 
 
+def _or_tsquery(query_text: str) -> str:
+    """Build an OR tsquery from a question's content words.
+
+    ``plainto_tsquery`` ANDs every token, and with the 'simple' config (no
+    stopword removal) that means "what", "is", "the" all become required — so a
+    natural-language question matches almost nothing. ORing the content words
+    instead lets ts_rank reward chunks that cover more of them. \\w+ keeps the
+    lexemes safe to hand to to_tsquery directly.
+    """
+    import re
+    terms = [t for t in re.findall(r"\w+", query_text.lower()) if len(t) > 2]
+    # Cap the term count so a pathological question can't build a huge query.
+    return " | ".join(dict.fromkeys(terms[:24]))
+
+
+def text_search(query_text: str, *, top_k: int) -> list[dict]:
+    """BM25-only retrieval — no query embedding required.
+
+    The serving path needs one embedding per question, from the same hard daily
+    cap that indexing draws on; when that cap is spent, dense retrieval is simply
+    unavailable. Full-text search still works and, for the literal questions this
+    site gets (programme names, "Erasmus", a fee), is often enough on its own.
+
+    ``similarity`` is reported as None because there is no cosine score to give.
+    The LLM's own "answer only from the context, otherwise say you don't know"
+    instruction remains the guard against answering from irrelevant chunks.
+    """
+    ts = _or_tsquery(query_text)
+    if not ts:
+        return []
+    sql = """
+        SELECT c.text, c.metadata, d.url, d.title, d.language,
+               NULL::float AS similarity,
+               ts_rank(to_tsvector('simple', c.text),
+                       to_tsquery('simple', %(ts)s)) AS fusion_score
+          FROM chunks c
+          JOIN documents d ON d.id = c.document_id
+         WHERE to_tsvector('simple', c.text) @@ to_tsquery('simple', %(ts)s)
+         ORDER BY fusion_score DESC
+         LIMIT %(k)s
+    """
+    with connection() as conn:
+        return conn.execute(sql, {"ts": ts, "k": top_k}).fetchall()
+
+
 def log_query(*, question, language, answered, top_similarity, latency_ms, sources,
               prompt_tokens=None, completion_tokens=None) -> int | None:
     try:

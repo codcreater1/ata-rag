@@ -130,11 +130,13 @@ def _build_context(hits: list[dict], budget: int = 9000) -> tuple[str, list[dict
         used += len(text)
 
         if not any(s["url"] == hit["url"] for s in sources):
+            sim = hit.get("similarity")
             sources.append({
                 "n": idx,
                 "title": hit["title"],
                 "url": hit["url"],
-                "similarity": round(float(hit["similarity"]), 4),
+                # None in BM25-only mode: there is no cosine score to report.
+                "similarity": round(float(sim), 4) if sim is not None else None,
             })
 
     return "\n\n---\n\n".join(blocks), sources
@@ -260,6 +262,43 @@ def _cacheable(question: str, history: list[dict] | None) -> bool:
     return not (history and _is_follow_up(question))
 
 
+def _retrieve(search_text: str, top_k: int) -> tuple[list[dict], float | None, bool]:
+    """Retrieve chunks for a query. Returns (hits, top_similarity, degraded).
+
+    Normally dense + BM25 fused. When the query embedding cannot be obtained —
+    the embedding quota is a hard daily cap shared with indexing — this falls
+    back to BM25-only so keyword-matchable questions keep working instead of the
+    whole assistant going dark. In that mode top_similarity is None (no cosine to
+    report) and the caller skips the cosine gate; the LLM's grounding
+    instruction is the remaining guard against irrelevant context.
+    """
+    try:
+        q_vec = embeddings.embed_query(search_text)
+    except embeddings.EmbeddingError:
+        logger.warning("query embedding unavailable; serving BM25-only")
+        return db.text_search(search_text, top_k=top_k), None, True
+
+    hits = db.hybrid_search(q_vec, search_text, top_k=top_k)
+    # The gate reads the best cosine score in the set, not the fused rank: a
+    # chunk pulled in by full-text alone should not count as semantic confidence.
+    top_sim = max((float(h["similarity"]) for h in hits), default=0.0)
+    return hits, top_sim, False
+
+
+def _below_gate(hits: list[dict], top_sim: float | None, degraded: bool) -> bool:
+    """Whether retrieval was too weak to answer from.
+
+    With cosine available, the calibrated similarity floor applies. In BM25-only
+    mode there is no cosine, so an empty result is the only "not found" — a
+    full-text match already means the query's terms occur in the corpus.
+    """
+    if not hits:
+        return True
+    if degraded:
+        return False
+    return top_sim is None or top_sim < settings.min_similarity
+
+
 def _retrieval_query(question: str, history: list[dict] | None) -> str:
     """What to actually search for.
 
@@ -365,30 +404,16 @@ def answer(question: str, *, top_k: int | None = None, language: str | None = No
         "pl" if _looks_polish(question) else "en")
 
     search_text = _retrieval_query(question, history)
-
-    try:
-        q_vec = embeddings.embed_query(search_text)
-    except embeddings.EmbeddingError:
-        logger.exception("query embedding failed")
-        return {
-            "answer": _fallback_answer(fallback_lang),
-            "sources": [], "confidence": 0.0, "answered": False,
-            "latency_ms": int((time.perf_counter() - started) * 1000),
-        }
-
-    hits = db.hybrid_search(q_vec, search_text, top_k=top_k)
-    # The gate reads the best cosine score in the set, not the fused rank: a
-    # chunk pulled in by full-text alone should not count as semantic confidence.
-    top_sim = max((float(h["similarity"]) for h in hits), default=0.0)
+    hits, top_sim, degraded = _retrieve(search_text, top_k)
 
     # Confidence gate — weak retrieval means we do not have the answer.
-    if not hits or top_sim < settings.min_similarity:
+    if _below_gate(hits, top_sim, degraded):
         latency = int((time.perf_counter() - started) * 1000)
         query_id = db.log_query(question=question, language=fallback_lang, answered=False,
-                                top_similarity=top_sim, latency_ms=latency, sources=[])
+                                top_similarity=top_sim or 0.0, latency_ms=latency, sources=[])
         return {
             "answer": _fallback_answer(fallback_lang),
-            "sources": [], "confidence": round(top_sim, 4), "answered": False,
+            "sources": [], "confidence": round(top_sim or 0.0, 4), "answered": False,
             "latency_ms": latency, "query_id": query_id,
         }
 
@@ -403,18 +428,22 @@ def answer(question: str, *, top_k: int | None = None, language: str | None = No
 
     latency = int((time.perf_counter() - started) * 1000)
     query_id = db.log_query(question=question, language=fallback_lang, answered=answered,
-                            top_similarity=top_sim, latency_ms=latency, sources=sources)
+                            top_similarity=top_sim or 0.0, latency_ms=latency, sources=sources)
 
     payload = {
         "answer": text,
         "sources": sources,
-        "confidence": round(top_sim, 4),
+        # None in BM25-only mode — the UI then omits the match badge rather than
+        # showing a cosine score that was never computed.
+        "confidence": round(top_sim, 4) if top_sim is not None else None,
         "answered": answered,
         "latency_ms": latency,
         "query_id": query_id,
     }
     # Only cache real answers; a failure should be retried, not remembered.
-    if answered and _cacheable(question, history):
+    # Degraded (BM25-only) answers are not cached: they should improve to the
+    # full hybrid result once the embedding quota resets.
+    if answered and not degraded and _cacheable(question, history):
         cache.put_answer(question, language, payload)
     return payload
 
@@ -422,26 +451,20 @@ def answer(question: str, *, top_k: int | None = None, language: str | None = No
 def _prepare(question: str, top_k: int | None, language: str | None,
              history: list[dict] | None):
     """Shared retrieval half of answering: returns (hits, context, sources,
-    top_similarity, fallback_language). Used by both answer() and stream()."""
+    top_similarity, fallback_language, degraded). Used by answer() and stream().
+    top_similarity is None in BM25-only mode; degraded flags that mode."""
     top_k = top_k or settings.top_k
     reply_lang = (language or "").lower()
     fallback_lang = reply_lang if reply_lang in _FALLBACKS else (
         "pl" if _looks_polish(question) else "en")
 
     search_text = _retrieval_query(question, history)
-    try:
-        q_vec = embeddings.embed_query(search_text)
-    except embeddings.EmbeddingError:
-        logger.exception("query embedding failed")
-        return [], "", [], 0.0, fallback_lang
-
-    hits = db.hybrid_search(q_vec, search_text, top_k=top_k)
-    top_sim = max((float(h["similarity"]) for h in hits), default=0.0)
-    if not hits or top_sim < settings.min_similarity:
-        return [], "", [], top_sim, fallback_lang
+    hits, top_sim, degraded = _retrieve(search_text, top_k)
+    if _below_gate(hits, top_sim, degraded):
+        return [], "", [], top_sim, fallback_lang, degraded
 
     context, sources = _build_context(hits)
-    return hits, context, sources, top_sim, fallback_lang
+    return hits, context, sources, top_sim, fallback_lang, degraded
 
 
 def stream(question: str, *, top_k: int | None = None, language: str | None = None,
@@ -477,16 +500,16 @@ def stream(question: str, *, top_k: int | None = None, language: str | None = No
             }) + "\n\n")
             return
 
-    hits, context, sources, top_sim, fallback_lang = _prepare(
+    hits, context, sources, top_sim, fallback_lang, degraded = _prepare(
         question, top_k, language, history)
 
     if not hits:
         latency = int((time.perf_counter() - started) * 1000)
         qid = db.log_query(question=question, language=fallback_lang, answered=False,
-                           top_similarity=top_sim, latency_ms=latency, sources=[])
+                           top_similarity=top_sim or 0.0, latency_ms=latency, sources=[])
         yield f"event: token\ndata: {json.dumps({'text': _fallback_answer(fallback_lang)})}\n\n"
         yield ("event: done\ndata: " + json.dumps({
-            "answered": False, "confidence": round(top_sim, 4),
+            "answered": False, "confidence": round(top_sim or 0.0, 4),
             "latency_ms": latency, "query_id": qid, "sources": [],
         }) + "\n\n")
         return
@@ -533,23 +556,25 @@ def stream(question: str, *, top_k: int | None = None, language: str | None = No
         yield f"event: token\ndata: {json.dumps({'text': text})}\n\n"
 
     latency = int((time.perf_counter() - started) * 1000)
+    confidence = round(top_sim, 4) if top_sim is not None else None
     qid = db.log_query(question=question, language=fallback_lang, answered=answered,
-                       top_similarity=top_sim, latency_ms=latency,
+                       top_similarity=top_sim or 0.0, latency_ms=latency,
                        sources=sources,
                        prompt_tokens=usage.get("prompt_tokens"),
                        completion_tokens=usage.get("completion_tokens"))
 
-    # Cache the assembled answer so a repeat costs nothing. Only real answers:
-    # a failure should be retried, not remembered.
-    if answered and _cacheable(question, history):
+    # Cache the assembled answer so a repeat costs nothing. Only real answers,
+    # and not degraded (BM25-only) ones — those should upgrade to the full
+    # hybrid result once the embedding quota resets.
+    if answered and not degraded and _cacheable(question, history):
         cache.put_answer(question, language, {
             "answer": "".join(collected), "sources": sources,
-            "confidence": round(top_sim, 4), "answered": True,
+            "confidence": confidence, "answered": True,
             "latency_ms": latency, "query_id": qid,
         })
 
     yield ("event: done\ndata: " + json.dumps({
-        "answered": answered, "confidence": round(top_sim, 4),
+        "answered": answered, "confidence": confidence,
         "latency_ms": latency, "query_id": qid,
         "sources": sources,
     }) + "\n\n")
