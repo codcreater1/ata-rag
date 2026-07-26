@@ -23,7 +23,12 @@ class Settings(BaseSettings):
     app_title: str = "ATA RAG"
     app_version: str = "0.1.0"
 
+    # The deployed frontend's origin comes from CORS_ORIGINS in the environment.
+    # These are the dev-server defaults: 5174 is the port vite.config.js pins,
+    # 5173 is vite's own default and what a stray `vite` run lands on.
     cors_origins: list[str] = [
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
         "http://localhost:5173",
         "http://127.0.0.1:5173",
     ]
@@ -57,6 +62,16 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.groq.com/openai/v1"
     llm_model: str = "llama-3.3-70b-versatile"
     answer_language: str = "auto"   # auto = mirror the user's question
+
+    # Groq's free tier allows 100k tokens per day, which a single afternoon of
+    # demoing can exhaust — and a dead LLM makes every answer look like a
+    # knowledge gap. Gemini has its own separate free quota and an
+    # OpenAI-compatible endpoint, so it stands in when Groq refuses.
+    fallback_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
+    # The floating alias on purpose: pinned Gemini versions get retired for new
+    # projects and start returning 404, which is a bad way for a *fallback* to
+    # fail — it is only exercised when the primary is already down.
+    fallback_model: str = "gemini-flash-latest"
 
     # ---------------------------------------------------------------- #
     # Crawl

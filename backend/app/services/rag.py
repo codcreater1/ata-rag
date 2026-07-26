@@ -21,7 +21,7 @@ import re
 import time
 
 from app.core import cache, db, embeddings
-from app.core.config import llm_api_key, settings
+from app.core.config import google_api_key, llm_api_key, settings
 
 logger = logging.getLogger(__name__)
 
@@ -84,8 +84,27 @@ _FALLBACKS = {
 }
 
 
+# Said when retrieval found the answer but no provider would generate it. The
+# "not on the website" wording would be a lie here, and it sends the visitor
+# away believing the university never published what they asked for.
+_UNAVAILABLE = {
+    "pl": ("Asystent jest chwilowo przeciążony. Znalazłem odpowiednie strony — "
+           "spróbuj ponownie za chwilę lub skorzystaj z linków poniżej."),
+    "uk": ("Асистент тимчасово перевантажений. Я знайшов відповідні сторінки — "
+           "спробуйте ще раз за хвилину або скористайтеся посиланнями нижче."),
+    "tr": ("Asistan şu anda yoğun. İlgili sayfaları buldum — birazdan tekrar "
+           "deneyin ya da aşağıdaki bağlantıları kullanın."),
+    "en": ("The assistant is temporarily overloaded. I did find relevant pages — "
+           "please try again shortly, or use the links below."),
+}
+
+
 def _fallback_answer(language_hint: str) -> str:
     return _FALLBACKS.get(language_hint, _FALLBACKS["en"])
+
+
+def _unavailable_answer(language_hint: str) -> str:
+    return _UNAVAILABLE.get(language_hint, _UNAVAILABLE["en"])
 
 
 def _looks_polish(text: str) -> bool:
@@ -149,7 +168,7 @@ def _flush_traces() -> None:
     threading.Thread(target=_do, daemon=True).start()
 
 
-def _openai_client(key: str):
+def _openai_client(key: str, base_url: str | None = None):
     """OpenAI-compatible client, wrapped by LangFuse when its keys are set so
     every answer call is traced (retrieval already logged to the queries table).
 
@@ -160,17 +179,34 @@ def _openai_client(key: str):
     """
     import os
 
+    base_url = base_url or settings.llm_base_url
+
     if os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY"):
         try:
             from langfuse.openai import OpenAI
 
-            return OpenAI(api_key=key, base_url=settings.llm_base_url)
+            return OpenAI(api_key=key, base_url=base_url)
         except Exception:
             logger.exception("LangFuse tracing unavailable; answering untraced")
 
     from openai import OpenAI
 
-    return OpenAI(api_key=key, base_url=settings.llm_base_url)
+    return OpenAI(api_key=key, base_url=base_url)
+
+
+def _providers() -> list[tuple[str, str, str, str]]:
+    """(label, api_key, base_url, model) candidates, in order of preference.
+
+    Groq is fast and free but capped at 100k tokens a day; Gemini's free tier is
+    counted separately, so one running dry does not take the assistant down.
+    """
+    out = []
+    if llm_api_key():
+        out.append(("groq", llm_api_key(), settings.llm_base_url, settings.llm_model))
+    if google_api_key():
+        out.append(("gemini", google_api_key(),
+                    settings.fallback_base_url, settings.fallback_model))
+    return out
 
 
 # Languages the UI can force an answer in. Retrieval stays cross-lingual; only
@@ -240,13 +276,8 @@ def _retrieval_query(question: str, history: list[dict] | None) -> str:
     return f"{previous[-1]} {question}".strip()
 
 
-def _answer_with_llm(question: str, context: str, language: str | None = None,
-                     history: list[dict] | None = None) -> tuple[str | None, dict]:
-    """Returns (answer, usage). usage carries token counts for analytics."""
-    key = llm_api_key()
-    if not key:
-        return None, {}
-
+def _messages(question: str, context: str, language: str | None,
+              history: list[dict] | None) -> list[dict]:
     system = SYSTEM_PROMPT
     lang_name = LANGUAGE_NAMES.get((language or "").lower())
     if lang_name:
@@ -270,24 +301,41 @@ def _answer_with_llm(question: str, context: str, language: str | None = None,
         "role": "user",
         "content": f"CONTEXT:\n{context}\n\n---\n\nQUESTION: {question}",
     })
+    return messages
 
-    try:
-        client = _openai_client(key)
-        response = client.chat.completions.create(
-            model=settings.llm_model,
-            messages=messages,
-            temperature=0.1,
-            max_tokens=700,
-        )
-        usage = getattr(response, "usage", None)
-        tokens = {
-            "prompt_tokens": getattr(usage, "prompt_tokens", None),
-            "completion_tokens": getattr(usage, "completion_tokens", None),
-        }
-        return ((response.choices[0].message.content or "").strip() or None), tokens
-    except Exception:
-        logger.exception("LLM answering failed")
+
+def _answer_with_llm(question: str, context: str, language: str | None = None,
+                     history: list[dict] | None = None) -> tuple[str | None, dict]:
+    """Returns (answer, usage). usage carries token counts for analytics.
+
+    Tries each configured provider in turn, so a provider that is rate-limited
+    or having a bad day costs a retry rather than the answer.
+    """
+    messages = _messages(question, context, language, history)
+    providers = _providers()
+    if not providers:
         return None, {}
+
+    for label, key, base_url, model in providers:
+        try:
+            client = _openai_client(key, base_url)
+            response = client.chat.completions.create(
+                model=model, messages=messages, temperature=0.1, max_tokens=700,
+            )
+            usage = getattr(response, "usage", None)
+            tokens = {
+                "prompt_tokens": getattr(usage, "prompt_tokens", None),
+                "completion_tokens": getattr(usage, "completion_tokens", None),
+            }
+            text = (response.choices[0].message.content or "").strip() or None
+            if text:
+                if label != providers[0][0]:
+                    logger.warning("answered via fallback provider %s", label)
+                return text, tokens
+        except Exception:
+            logger.exception("provider %s failed to answer", label)
+
+    return None, {}
 
 
 def answer(question: str, *, top_k: int | None = None, language: str | None = None,
@@ -349,7 +397,9 @@ def answer(question: str, *, top_k: int | None = None, language: str | None = No
     _flush_traces()
     answered = text is not None
     if not answered:
-        text = _fallback_answer(fallback_lang)
+        # Retrieval succeeded — only generation failed. Keep the sources: the
+        # visitor can still read the pages the answer would have been built from.
+        text = _unavailable_answer(fallback_lang)
 
     latency = int((time.perf_counter() - started) * 1000)
     query_id = db.log_query(question=question, language=fallback_lang, answered=answered,
@@ -357,7 +407,7 @@ def answer(question: str, *, top_k: int | None = None, language: str | None = No
 
     payload = {
         "answer": text,
-        "sources": sources if answered else [],
+        "sources": sources,
         "confidence": round(top_sim, 4),
         "answered": answered,
         "latency_ms": latency,
@@ -443,30 +493,20 @@ def stream(question: str, *, top_k: int | None = None, language: str | None = No
 
     yield f"event: sources\ndata: {json.dumps({'sources': sources})}\n\n"
 
-    key = llm_api_key()
+    messages = _messages(question, context, language, history)
     collected: list[str] = []
     usage: dict = {}
 
-    if key:
-        system = SYSTEM_PROMPT
-        lang_name = LANGUAGE_NAMES.get((language or "").lower())
-        if lang_name:
-            system += (f"\n\nIMPORTANT: Regardless of the question's language, "
-                       f"write your entire answer in {lang_name}.")
-
-        messages = [{"role": "system", "content": system}]
-        for turn in (history or [])[-MAX_HISTORY_TURNS:]:
-            role, content = turn.get("role"), (turn.get("content") or "").strip()
-            if role in ("user", "assistant") and content:
-                messages.append({"role": role, "content": content[:2000]})
-        messages.append({"role": "user",
-                         "content": f"CONTEXT:\n{context}\n\n---\n\nQUESTION: {question}"})
-
+    # Same provider fallback as the non-streaming path. A provider that fails
+    # before its first token can be swapped out cleanly; once tokens are on the
+    # wire the answer is half-delivered, so a later failure ends the stream
+    # rather than restarting it under the reader.
+    for label, key, base_url, model in _providers():
         try:
-            response = _openai_client(key).chat.completions.create(
-                model=settings.llm_model, messages=messages,
-                temperature=0.1, max_tokens=700, stream=True,
-                stream_options={"include_usage": True},
+            extra = {"stream_options": {"include_usage": True}} if label == "groq" else {}
+            response = _openai_client(key, base_url).chat.completions.create(
+                model=model, messages=messages,
+                temperature=0.1, max_tokens=700, stream=True, **extra,
             )
             for part in response:
                 if getattr(part, "usage", None):
@@ -479,19 +519,23 @@ def stream(question: str, *, top_k: int | None = None, language: str | None = No
                     collected.append(piece)
                     yield f"event: token\ndata: {json.dumps({'text': piece})}\n\n"
         except Exception:
-            logger.exception("streaming failed")
+            logger.exception("provider %s failed to stream", label)
         finally:
             _flush_traces()
 
+        if collected:
+            break
+
     answered = bool(collected)
     if not answered:
-        text = _fallback_answer(fallback_lang)
+        # Retrieval worked; generation did not. Say so, and leave the sources up.
+        text = _unavailable_answer(fallback_lang)
         yield f"event: token\ndata: {json.dumps({'text': text})}\n\n"
 
     latency = int((time.perf_counter() - started) * 1000)
     qid = db.log_query(question=question, language=fallback_lang, answered=answered,
                        top_similarity=top_sim, latency_ms=latency,
-                       sources=sources if answered else [],
+                       sources=sources,
                        prompt_tokens=usage.get("prompt_tokens"),
                        completion_tokens=usage.get("completion_tokens"))
 
@@ -507,5 +551,5 @@ def stream(question: str, *, top_k: int | None = None, language: str | None = No
     yield ("event: done\ndata: " + json.dumps({
         "answered": answered, "confidence": round(top_sim, 4),
         "latency_ms": latency, "query_id": qid,
-        "sources": sources if answered else [],
+        "sources": sources,
     }) + "\n\n")
