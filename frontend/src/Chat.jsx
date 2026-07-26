@@ -30,12 +30,22 @@ function CopyButton({ text }) {
   );
 }
 
+// Retrieval returns ten passages, but the answer usually rests on the first few
+// and the tail is near-misses. Listing all ten made the citations taller than
+// the answer itself, so the rest stays one tap away instead of in the way.
+const SOURCES_SHOWN = 4;
+
 function Sources({ sources, queryId }) {
+  const [expanded, setExpanded] = useState(false);
   if (!sources?.length) return null;
+
+  const hidden = sources.length - SOURCES_SHOWN;
+  const visible = expanded ? sources : sources.slice(0, SOURCES_SHOWN);
+
   return (
     <div className="sources">
       <span className="sourcesLabel">Sources</span>
-      {sources.map((s) => (
+      {visible.map((s) => (
         <a
           key={s.n}
           href={s.url}
@@ -47,6 +57,11 @@ function Sources({ sources, queryId }) {
           <ExternalLink size={12} /> {s.title}
         </a>
       ))}
+      {hidden > 0 && (
+        <button className="moreSources" onClick={() => setExpanded(!expanded)}>
+          {expanded ? "Show fewer sources" : `Show ${hidden} more`}
+        </button>
+      )}
     </div>
   );
 }
