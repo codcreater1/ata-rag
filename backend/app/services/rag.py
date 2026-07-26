@@ -199,15 +199,19 @@ def _openai_client(key: str, base_url: str | None = None):
 def _providers() -> list[tuple[str, str, str, str]]:
     """(label, api_key, base_url, model) candidates, in order of preference.
 
-    Groq is fast and free but capped at 100k tokens a day; Gemini's free tier is
-    counted separately, so one running dry does not take the assistant down.
+    Groq is fast and free but capped at 100k tokens a day. After it, each Gemini
+    model is its own candidate: their free-tier daily buckets are separate, so a
+    chain of them keeps answering long after any single one is spent.
     """
     out = []
     if llm_api_key():
         out.append(("groq", llm_api_key(), settings.llm_base_url, settings.llm_model))
     if google_api_key():
-        out.append(("gemini", google_api_key(),
-                    settings.fallback_base_url, settings.fallback_model))
+        for model in settings.fallback_models.split(","):
+            model = model.strip()
+            if model:
+                out.append((f"gemini:{model}", google_api_key(),
+                            settings.fallback_base_url, model))
     return out
 
 
@@ -343,22 +347,13 @@ def _messages(question: str, context: str, language: str | None,
     return messages
 
 
-def _answer_with_llm(question: str, context: str, language: str | None = None,
-                     history: list[dict] | None = None) -> tuple[str | None, dict]:
-    """Returns (answer, usage). usage carries token counts for analytics.
-
-    Tries each configured provider in turn, so a provider that is rate-limited
-    or having a bad day costs a retry rather than the answer.
-    """
-    messages = _messages(question, context, language, history)
-    providers = _providers()
-    if not providers:
-        return None, {}
-
+def _answer_over(messages: list[dict], providers: list[tuple]) -> tuple[str | None, dict]:
+    """Non-streaming completion over the given providers, in order. Returns
+    (answer, usage); a provider that is rate-limited or erroring costs a retry
+    rather than the answer."""
     for label, key, base_url, model in providers:
         try:
-            client = _openai_client(key, base_url)
-            response = client.chat.completions.create(
+            response = _openai_client(key, base_url).chat.completions.create(
                 model=model, messages=messages, temperature=0.1, max_tokens=700,
             )
             usage = getattr(response, "usage", None)
@@ -375,6 +370,12 @@ def _answer_with_llm(question: str, context: str, language: str | None = None,
             logger.exception("provider %s failed to answer", label)
 
     return None, {}
+
+
+def _answer_with_llm(question: str, context: str, language: str | None = None,
+                     history: list[dict] | None = None) -> tuple[str | None, dict]:
+    """Returns (answer, usage). usage carries token counts for analytics."""
+    return _answer_over(_messages(question, context, language, history), _providers())
 
 
 def answer(question: str, *, top_k: int | None = None, language: str | None = None,
@@ -517,19 +518,22 @@ def stream(question: str, *, top_k: int | None = None, language: str | None = No
     yield f"event: sources\ndata: {json.dumps({'sources': sources})}\n\n"
 
     messages = _messages(question, context, language, history)
+    providers = _providers()
     collected: list[str] = []
     usage: dict = {}
 
-    # Same provider fallback as the non-streaming path. A provider that fails
-    # before its first token can be swapped out cleanly; once tokens are on the
-    # wire the answer is half-delivered, so a later failure ends the stream
-    # rather than restarting it under the reader.
-    for label, key, base_url, model in _providers():
+    # Stream only the primary provider (Groq streams to completion reliably).
+    # If it produces nothing — the usual failure is a 429 before the first token
+    # — drop to the fallback provider, which is called NON-streaming: Gemini's
+    # OpenAI-compatible streaming drops the connection mid-answer, and a
+    # truncated reply shown as a complete one is worse than a short wait for the
+    # whole thing.
+    if providers:
+        label, key, base_url, model = providers[0]
         try:
-            extra = {"stream_options": {"include_usage": True}} if label == "groq" else {}
             response = _openai_client(key, base_url).chat.completions.create(
-                model=model, messages=messages,
-                temperature=0.1, max_tokens=700, stream=True, **extra,
+                model=model, messages=messages, temperature=0.1, max_tokens=700,
+                stream=True, stream_options={"include_usage": True},
             )
             for part in response:
                 if getattr(part, "usage", None):
@@ -542,12 +546,17 @@ def stream(question: str, *, top_k: int | None = None, language: str | None = No
                     collected.append(piece)
                     yield f"event: token\ndata: {json.dumps({'text': piece})}\n\n"
         except Exception:
-            logger.exception("provider %s failed to stream", label)
+            logger.exception("primary provider %s failed to stream", label)
         finally:
             _flush_traces()
 
-        if collected:
-            break
+    if not collected and len(providers) > 1:
+        # Fallback, one shot. Emit the whole answer as a single frame.
+        text, usage = _answer_over(messages, providers[1:])
+        if text:
+            collected.append(text)
+            yield f"event: token\ndata: {json.dumps({'text': text})}\n\n"
+        _flush_traces()
 
     answered = bool(collected)
     if not answered:

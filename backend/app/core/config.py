@@ -65,13 +65,14 @@ class Settings(BaseSettings):
 
     # Groq's free tier allows 100k tokens per day, which a single afternoon of
     # demoing can exhaust — and a dead LLM makes every answer look like a
-    # knowledge gap. Gemini has its own separate free quota and an
-    # OpenAI-compatible endpoint, so it stands in when Groq refuses.
+    # knowledge gap. Gemini stands in via its OpenAI-compatible endpoint.
     fallback_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
-    # The floating alias on purpose: pinned Gemini versions get retired for new
-    # projects and start returning 404, which is a bad way for a *fallback* to
-    # fail — it is only exercised when the primary is already down.
-    fallback_model: str = "gemini-flash-latest"
+    # Several models, not one: each Gemini model has its OWN free-tier daily
+    # request bucket (the newest, e.g. 3.6-flash, is as low as 20/day), so
+    # trying them in turn multiplies the fallback's capacity. Ordered lite-first
+    # (higher free throughput). Comma-separated so it is env-overridable.
+    fallback_models: str = ("gemini-flash-lite-latest,gemini-2.0-flash-lite,"
+                            "gemini-flash-latest,gemini-2.0-flash")
 
     # Indexing and query-time retrieval draw on the same ~1000/day Gemini
     # embedding cap (one request per chunk). A greedy index run drains it and
