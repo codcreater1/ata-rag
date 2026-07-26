@@ -123,13 +123,25 @@ def _build_context(hits: list[dict], budget: int = 9000) -> tuple[str, list[dict
 
 def _openai_client(key: str):
     """OpenAI-compatible client, wrapped by LangFuse when its keys are set so
-    every answer call is traced (retrieval already logged to the queries table)."""
+    every answer call is traced (retrieval already logged to the queries table).
+
+    The wrapper is optional by design: if it cannot be loaded — package missing,
+    an incompatible release — answering falls back to the plain client. Callers
+    swallow exceptions from here, so without this guard a broken observability
+    dependency would silently stop every answer instead of just the tracing.
+    """
     import os
 
     if os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY"):
-        from langfuse.openai import OpenAI
-    else:
-        from openai import OpenAI
+        try:
+            from langfuse.openai import OpenAI
+
+            return OpenAI(api_key=key, base_url=settings.llm_base_url)
+        except Exception:
+            logger.exception("LangFuse tracing unavailable; answering untraced")
+
+    from openai import OpenAI
+
     return OpenAI(api_key=key, base_url=settings.llm_base_url)
 
 
