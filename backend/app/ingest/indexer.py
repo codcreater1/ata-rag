@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import logging
 
-from app.core import db, embeddings
+from app.core import cache, db, embeddings
 from app.core.config import settings
 from app.ingest.chunker import chunk_page
 from app.ingest.crawler import crawl
@@ -100,6 +100,9 @@ def run(*, limit: int | None = None, skip_crawl: bool = False,
             stats["failed"] += 1
 
     db.build_vector_index()
+    if stats["indexed"]:
+        # Cached answers were built from the previous corpus.
+        cache.clear_answers()
     logger.info("ingestion done: %s", stats)
     return stats
 

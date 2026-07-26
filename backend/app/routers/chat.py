@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.core import db
+from app.core import cache, db
 from app.services import rag
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -43,6 +43,8 @@ class AskResponse(BaseModel):
     latency_ms: int
     # None when analytics logging failed — feedback is then simply unavailable.
     query_id: int | None = None
+    # True when served from cache (no embedding or model call was spent).
+    cached: bool = False
 
 
 class FeedbackRequest(BaseModel):
@@ -56,8 +58,26 @@ class SourceClickRequest(BaseModel):
     query_id: int | None = None
 
 
+def _client_id(http: Request) -> str:
+    """Caller identity for rate limiting. Behind Cloudflare/Caddy the socket peer
+    is the proxy, so prefer the forwarded client address when present."""
+    forwarded = http.headers.get("cf-connecting-ip") or http.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return http.client.host if http.client else "unknown"
+
+
+def _enforce_rate_limit(http: Request) -> None:
+    if cache.rate_limited(_client_id(http)):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many questions in a short time. Please wait a moment.",
+        )
+
+
 @router.post("/ask", response_model=AskResponse)
-def ask(request: AskRequest):
+def ask(request: AskRequest, http: Request):
+    _enforce_rate_limit(http)
     language = None if request.language in (None, "auto") else request.language
     return rag.answer(
         request.question,
@@ -68,9 +88,10 @@ def ask(request: AskRequest):
 
 
 @router.post("/ask/stream")
-def ask_stream(request: AskRequest):
+def ask_stream(request: AskRequest, http: Request):
     """Same answer, streamed as Server-Sent Events so the reply appears as it
     is written rather than after a multi-second wait."""
+    _enforce_rate_limit(http)
     language = None if request.language in (None, "auto") else request.language
     generator = rag.stream(
         request.question,

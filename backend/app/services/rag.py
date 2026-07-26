@@ -20,7 +20,7 @@ import logging
 import re
 import time
 
-from app.core import db, embeddings
+from app.core import cache, db, embeddings
 from app.core.config import llm_api_key, settings
 
 logger = logging.getLogger(__name__)
@@ -173,6 +173,17 @@ def _is_follow_up(question: str) -> bool:
     return len(words) <= 6 and bool(_REFERENTIAL.search(q))
 
 
+def _cacheable(question: str, history: list[dict] | None) -> bool:
+    """Can this question's answer be reused for an identical question later?
+
+    Only if it stands on its own. "And in Wrocław?" means different things in
+    different conversations; "How much is tuition for Informatyka?" does not,
+    so it stays cacheable even mid-conversation — which matters because the UI
+    sends history with every message after the first.
+    """
+    return not (history and _is_follow_up(question))
+
+
 def _retrieval_query(question: str, history: list[dict] | None) -> str:
     """What to actually search for.
 
@@ -248,6 +259,17 @@ def answer(question: str, *, top_k: int | None = None, language: str | None = No
     turns so follow-up questions resolve against them.
     """
     started = time.perf_counter()
+
+    # A repeat of a recent question is served from cache: it costs an embedding
+    # from a hard-capped daily budget otherwise. A follow-up is not cacheable
+    # (its meaning depends on the turns before it), but a self-contained
+    # question is — the answer comes from the retrieved context either way, and
+    # the UI sends history on every message after the first.
+    if _cacheable(question, history):
+        cached = cache.get_answer(question, language)
+        if cached is not None:
+            return {**cached, "cached": True}
+
     top_k = top_k or settings.top_k
     # Language for the fallback message: the explicit choice, else detected.
     reply_lang = (language or "").lower()
@@ -292,7 +314,7 @@ def answer(question: str, *, top_k: int | None = None, language: str | None = No
     query_id = db.log_query(question=question, language=fallback_lang, answered=answered,
                             top_similarity=top_sim, latency_ms=latency, sources=sources)
 
-    return {
+    payload = {
         "answer": text,
         "sources": sources if answered else [],
         "confidence": round(top_sim, 4),
@@ -300,6 +322,10 @@ def answer(question: str, *, top_k: int | None = None, language: str | None = No
         "latency_ms": latency,
         "query_id": query_id,
     }
+    # Only cache real answers; a failure should be retried, not remembered.
+    if answered and _cacheable(question, history):
+        cache.put_answer(question, language, payload)
+    return payload
 
 
 def _prepare(question: str, top_k: int | None, language: str | None,
@@ -342,6 +368,23 @@ def stream(question: str, *, top_k: int | None = None, language: str | None = No
     # no bytes in that window drops the connection (Cloudflare answered 502).
     # A leading comment establishes the stream immediately; SSE clients ignore it.
     yield ": stream open\n\n"
+
+    # A cache hit skips the embedding and the model entirely; replay it as one
+    # frame. This is the path the UI actually uses, so it is where the saved
+    # daily quota matters most.
+    if _cacheable(question, history):
+        hit = cache.get_answer(question, language)
+        if hit is not None:
+            if hit.get("sources"):
+                yield f"event: sources\ndata: {json.dumps({'sources': hit['sources']})}\n\n"
+            yield f"event: token\ndata: {json.dumps({'text': hit['answer']})}\n\n"
+            yield ("event: done\ndata: " + json.dumps({
+                "answered": hit["answered"], "confidence": hit["confidence"],
+                "latency_ms": int((time.perf_counter() - started) * 1000),
+                "query_id": hit.get("query_id"), "sources": hit.get("sources", []),
+                "cached": True,
+            }) + "\n\n")
+            return
 
     hits, context, sources, top_sim, fallback_lang = _prepare(
         question, top_k, language, history)
@@ -408,6 +451,15 @@ def stream(question: str, *, top_k: int | None = None, language: str | None = No
                        sources=sources if answered else [],
                        prompt_tokens=usage.get("prompt_tokens"),
                        completion_tokens=usage.get("completion_tokens"))
+
+    # Cache the assembled answer so a repeat costs nothing. Only real answers:
+    # a failure should be retried, not remembered.
+    if answered and _cacheable(question, history):
+        cache.put_answer(question, language, {
+            "answer": "".join(collected), "sources": sources,
+            "confidence": round(top_sim, 4), "answered": True,
+            "latency_ms": latency, "query_id": qid,
+        })
 
     yield ("event: done\ndata: " + json.dumps({
         "answered": answered, "confidence": round(top_sim, 4),
