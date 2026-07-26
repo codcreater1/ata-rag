@@ -61,7 +61,8 @@ def run(*, limit: int | None = None, skip_crawl: bool = False,
         logger.exception("tuition ingestion failed; continuing with crawled pages")
 
     stats = {"pages": len(pages), "indexed": 0, "skipped": 0,
-             "chunks": 0, "failed": 0, "quota_reached": False}
+             "chunks": 0, "failed": 0, "quota_reached": False,
+             "budget_reached": False}
 
     # Embed the highest-value pages first so a day capped by the free-tier quota
     # still covers tuition, programmes and admissions before news posts.
@@ -88,6 +89,18 @@ def run(*, limit: int | None = None, skip_crawl: bool = False,
                 if not chunks:
                     conn.commit()
                     continue
+
+                # Stop before draining the day's embedding budget, so live
+                # queries keep their dense retrieval. Checked before the call so
+                # a page is never left with half its chunks embedded. A full
+                # re-index is a deliberate admin action and lifts the reserve.
+                budget = 0 if full else settings.embed_chunks_per_run
+                if budget and stats["chunks"] + len(chunks) > budget:
+                    conn.rollback()
+                    stats["budget_reached"] = True
+                    logger.info("per-run embed budget (%d chunks) reached — "
+                                "stopping to leave quota for live queries", budget)
+                    break
 
                 vectors = embeddings.embed_documents([c.text for c in chunks])
                 db.replace_chunks(

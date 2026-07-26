@@ -73,6 +73,13 @@ class Settings(BaseSettings):
     # fail — it is only exercised when the primary is already down.
     fallback_model: str = "gemini-flash-latest"
 
+    # Indexing and query-time retrieval draw on the same ~1000/day Gemini
+    # embedding cap (one request per chunk). A greedy index run drains it and
+    # every live question then falls back to BM25-only. Stopping a run short of
+    # the cap leaves headroom so the daytime product keeps its dense retrieval.
+    # 0 disables the reserve (a deliberate full re-index).
+    embed_chunks_per_run: int = 850
+
     # ---------------------------------------------------------------- #
     # Crawl
     # ---------------------------------------------------------------- #
