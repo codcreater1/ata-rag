@@ -294,20 +294,25 @@ def _cacheable(question: str, history: list[dict] | None) -> bool:
     return not (history and _is_follow_up(question))
 
 
-def _retrieve(search_text: str, top_k: int) -> tuple[list[dict], float | None, bool]:
-    """Retrieve chunks for a query. Returns (hits, top_similarity, degraded).
-
-    Normally dense + BM25 fused. When the query embedding cannot be obtained —
-    the embedding quota is a hard daily cap shared with indexing — this falls
-    back to BM25-only so keyword-matchable questions keep working instead of the
-    whole assistant going dark. In that mode top_similarity is None (no cosine to
-    report) and the caller skips the cosine gate; the LLM's grounding
-    instruction is the remaining guard against irrelevant context.
-    """
+def _embed_or_none(search_text: str) -> list[float] | None:
+    """Query embedding, or None when the daily embedding quota is spent. The one
+    embedding is reused for the semantic cache lookup and for retrieval."""
     try:
-        q_vec = embeddings.embed_query(search_text)
+        return embeddings.embed_query(search_text)
     except embeddings.EmbeddingError:
         logger.warning("query embedding unavailable; serving BM25-only")
+        return None
+
+
+def _search(q_vec: list[float] | None, search_text: str,
+            top_k: int) -> tuple[list[dict], float | None, bool]:
+    """Retrieve chunks. Returns (hits, top_similarity, degraded).
+
+    Dense + BM25 fused when an embedding is available; BM25-only otherwise, so
+    the assistant keeps working when the embedding quota is spent. In that mode
+    top_similarity is None and the caller skips the cosine gate.
+    """
+    if q_vec is None:
         return db.text_search(search_text, top_k=top_k), None, True
 
     hits = db.hybrid_search(q_vec, search_text, top_k=top_k)
@@ -315,6 +320,14 @@ def _retrieve(search_text: str, top_k: int) -> tuple[list[dict], float | None, b
     # chunk pulled in by full-text alone should not count as semantic confidence.
     top_sim = max((float(h["similarity"]) for h in hits), default=0.0)
     return hits, top_sim, False
+
+
+def _cache_language(question: str, language: str | None) -> str:
+    """Language bucket for the answer cache: the picker choice, else the detected
+    question language. Keyed this way so a cached reply is never served across
+    languages — an English answer must not come back for a Turkish question."""
+    reply_lang = (language or "").lower()
+    return reply_lang if reply_lang in LANGUAGE_NAMES else _detect_language(question)
 
 
 def _below_gate(hits: list[dict], top_sim: float | None, degraded: bool) -> bool:
@@ -429,7 +442,12 @@ def answer(question: str, *, top_k: int | None = None, language: str | None = No
     # (its meaning depends on the turns before it), but a self-contained
     # question is — the answer comes from the retrieved context either way, and
     # the UI sends history on every message after the first.
-    if _cacheable(question, history):
+    cacheable = _cacheable(question, history)
+    cache_lang = _cache_language(question, language)
+    q_norm = cache.normalise_question(question)
+
+    # L1: in-process cache — a repeat within the hour, no DB round-trip.
+    if cacheable:
         cached = cache.get_answer(question, language)
         if cached is not None:
             return {**cached, "cached": True}
@@ -440,7 +458,18 @@ def answer(question: str, *, top_k: int | None = None, language: str | None = No
     fallback_lang = reply_lang if reply_lang in _FALLBACKS else _detect_language(question)
 
     search_text = _retrieval_query(question, history)
-    hits, top_sim, degraded = _retrieve(search_text, top_k)
+    q_vec = _embed_or_none(search_text)
+
+    # L2: persistent semantic cache in the vector DB. Survives redeploys and,
+    # via the embedding, matches paraphrases — so a question answered once never
+    # spends model credit again. Checked before retrieval and the model call.
+    if cacheable:
+        stored = db.qa_cache_get(q_norm, cache_lang, q_vec, settings.qa_cache_similarity)
+        if stored is not None:
+            cache.put_answer(question, language, stored)   # warm L1
+            return {**stored, "cached": True}
+
+    hits, top_sim, degraded = _search(q_vec, search_text, top_k)
 
     # Confidence gate — weak retrieval means we do not have the answer.
     if _below_gate(hits, top_sim, degraded):
@@ -479,22 +508,24 @@ def answer(question: str, *, top_k: int | None = None, language: str | None = No
     # Only cache real answers; a failure should be retried, not remembered.
     # Degraded (BM25-only) answers are not cached: they should improve to the
     # full hybrid result once the embedding quota resets.
-    if answered and not degraded and _cacheable(question, history):
+    if answered and not degraded and cacheable:
         cache.put_answer(question, language, payload)
+        db.qa_cache_put(q_norm, cache_lang, q_vec, payload)
     return payload
 
 
 def _prepare(question: str, top_k: int | None, language: str | None,
-             history: list[dict] | None):
-    """Shared retrieval half of answering: returns (hits, context, sources,
-    top_similarity, fallback_language, degraded). Used by answer() and stream().
-    top_similarity is None in BM25-only mode; degraded flags that mode."""
+             history: list[dict] | None, q_vec: list[float] | None):
+    """Retrieval half of the streaming path: returns (hits, context, sources,
+    top_similarity, fallback_language, degraded). The query embedding is passed
+    in so the caller can reuse it for the semantic cache. top_similarity is None
+    in BM25-only mode; degraded flags that mode."""
     top_k = top_k or settings.top_k
     reply_lang = (language or "").lower()
     fallback_lang = reply_lang if reply_lang in _FALLBACKS else _detect_language(question)
 
     search_text = _retrieval_query(question, history)
-    hits, top_sim, degraded = _retrieve(search_text, top_k)
+    hits, top_sim, degraded = _search(q_vec, search_text, top_k)
     if _below_gate(hits, top_sim, degraded):
         return [], "", [], top_sim, fallback_lang, degraded
 
@@ -518,25 +549,44 @@ def stream(question: str, *, top_k: int | None = None, language: str | None = No
     # A leading comment establishes the stream immediately; SSE clients ignore it.
     yield ": stream open\n\n"
 
-    # A cache hit skips the embedding and the model entirely; replay it as one
-    # frame. This is the path the UI actually uses, so it is where the saved
-    # daily quota matters most.
-    if _cacheable(question, history):
+    cacheable = _cacheable(question, history)
+    cache_lang = _cache_language(question, language)
+    q_norm = cache.normalise_question(question)
+
+    def _replay(hit: dict):
+        """Emit a cached answer as one sources+token+done batch."""
+        if hit.get("sources"):
+            yield f"event: sources\ndata: {json.dumps({'sources': hit['sources']})}\n\n"
+        yield f"event: token\ndata: {json.dumps({'text': hit['answer']})}\n\n"
+        yield ("event: done\ndata: " + json.dumps({
+            "answered": hit["answered"], "confidence": hit.get("confidence"),
+            "latency_ms": int((time.perf_counter() - started) * 1000),
+            "query_id": hit.get("query_id"), "sources": hit.get("sources", []),
+            "cached": True,
+        }) + "\n\n")
+
+    # L1: in-process cache — a repeat within the hour, no DB round-trip. This is
+    # the path the UI actually uses, so it is where the saved quota matters most.
+    if cacheable:
         hit = cache.get_answer(question, language)
         if hit is not None:
-            if hit.get("sources"):
-                yield f"event: sources\ndata: {json.dumps({'sources': hit['sources']})}\n\n"
-            yield f"event: token\ndata: {json.dumps({'text': hit['answer']})}\n\n"
-            yield ("event: done\ndata: " + json.dumps({
-                "answered": hit["answered"], "confidence": hit["confidence"],
-                "latency_ms": int((time.perf_counter() - started) * 1000),
-                "query_id": hit.get("query_id"), "sources": hit.get("sources", []),
-                "cached": True,
-            }) + "\n\n")
+            yield from _replay(hit)
+            return
+
+    q_vec = _embed_or_none(_retrieval_query(question, history))
+
+    # L2: persistent semantic cache in the vector DB — survives redeploys and
+    # matches paraphrases, so an answered question never spends model credit
+    # again. Checked before retrieval and the model.
+    if cacheable:
+        stored = db.qa_cache_get(q_norm, cache_lang, q_vec, settings.qa_cache_similarity)
+        if stored is not None:
+            cache.put_answer(question, language, stored)   # warm L1
+            yield from _replay(stored)
             return
 
     hits, context, sources, top_sim, fallback_lang, degraded = _prepare(
-        question, top_k, language, history)
+        question, top_k, language, history, q_vec)
 
     if not hits:
         latency = int((time.perf_counter() - started) * 1000)
@@ -609,12 +659,14 @@ def stream(question: str, *, top_k: int | None = None, language: str | None = No
     # Cache the assembled answer so a repeat costs nothing. Only real answers,
     # and not degraded (BM25-only) ones — those should upgrade to the full
     # hybrid result once the embedding quota resets.
-    if answered and not degraded and _cacheable(question, history):
-        cache.put_answer(question, language, {
+    if answered and not degraded and cacheable:
+        payload = {
             "answer": "".join(collected), "sources": sources,
             "confidence": confidence, "answered": True,
             "latency_ms": latency, "query_id": qid,
-        })
+        }
+        cache.put_answer(question, language, payload)
+        db.qa_cache_put(q_norm, cache_lang, q_vec, payload)
 
     yield ("event: done\ndata: " + json.dumps({
         "answered": answered, "confidence": confidence,

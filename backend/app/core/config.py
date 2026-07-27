@@ -50,6 +50,17 @@ class Settings(BaseSettings):
     # Re-measure this if the embedding model changes.
     min_similarity: float = 0.60
 
+    # A cached answer is reused for a new question only when their embeddings are
+    # this close. A hit skips retrieval and the model, so a loose match would
+    # serve the wrong answer — worse than regenerating. Measured on the live
+    # index, from a "tuition for Computer Engineering" cache entry:
+    #     paraphrases          0.88 – 0.96  ("how much does CE cost", "CE tuition fee")
+    #     other programmes     0.75 – 0.76  ("tuition for Architecture", "for Nursing")
+    #     unrelated questions  0.44 – 0.48
+    # 0.90 sits in the wide gap: the natural rephrasings hit, a different
+    # programme's fee question never does.
+    qa_cache_similarity: float = 0.90
+
     # gemini-embedding-001 defaults to 3072 dims but supports Matryoshka
     # truncation; 768 keeps the pgvector index small with negligible quality
     # loss and stays under pgvector's 2000-dim ivfflat limit.

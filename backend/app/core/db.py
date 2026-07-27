@@ -109,6 +109,24 @@ CREATE TABLE IF NOT EXISTS source_clicks (
     title      TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS source_clicks_url_idx ON source_clicks(url);
+
+-- Persistent semantic answer cache. A question that was answered once should
+-- never spend model credit again — not even after a redeploy (the in-process
+-- cache resets then). Stored with the question's embedding so a *similar*
+-- question ("how much is tuition" vs "what is the tuition") reuses the answer
+-- too, matched by cosine distance in pgvector.
+CREATE TABLE IF NOT EXISTS qa_cache (
+    id            BIGSERIAL PRIMARY KEY,
+    question_norm TEXT NOT NULL,
+    language      TEXT NOT NULL DEFAULT 'auto',
+    embedding     vector(%(dim)s),
+    payload       JSONB NOT NULL,
+    hits          INT NOT NULL DEFAULT 0,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_hit_at   TIMESTAMPTZ,
+    UNIQUE (question_norm, language)
+);
+CREATE INDEX IF NOT EXISTS qa_cache_lang_idx ON qa_cache(language);
 """
 
 # Built separately: ivfflat needs rows present to pick sensible lists, so we
@@ -381,6 +399,82 @@ def text_search(query_text: str, *, top_k: int) -> list[dict]:
     """
     with connection() as conn:
         return conn.execute(sql, {"ts": ts, "k": top_k}).fetchall()
+
+
+def qa_cache_get(question_norm: str, cache_lang: str,
+                 embedding: list[float] | None,
+                 threshold: float) -> dict | None:
+    """A stored answer for this question, or None. Never raises.
+
+    Two layers: an exact match on the normalised text (free, no embedding), then
+    — if an embedding is given — the nearest past question by cosine distance,
+    accepted only above *threshold*. Both are scoped to *cache_lang* so a reply
+    is never reused across languages. A hit bumps the usage counter.
+    """
+    try:
+        with connection() as conn:
+            row = conn.execute(
+                """SELECT id, payload FROM qa_cache
+                    WHERE question_norm = %s AND language = %s""",
+                (question_norm, cache_lang),
+            ).fetchone()
+
+            if not row and embedding is not None:
+                row = conn.execute(
+                    """SELECT id, payload, 1 - (embedding <=> %(q)s::vector) AS sim
+                         FROM qa_cache
+                        WHERE language = %(lang)s AND embedding IS NOT NULL
+                        ORDER BY embedding <=> %(q)s::vector
+                        LIMIT 1""",
+                    {"q": str(embedding), "lang": cache_lang},
+                ).fetchone()
+                if not row or row["sim"] < threshold:
+                    return None
+
+            if not row:
+                return None
+
+            conn.execute(
+                "UPDATE qa_cache SET hits = hits + 1, last_hit_at = now() WHERE id = %s",
+                (row["id"],),
+            )
+            conn.commit()
+            return row["payload"]
+    except Exception:
+        # A cache miss must never break answering; fall through to a fresh answer.
+        logger.exception("qa_cache lookup failed")
+        return None
+
+
+def qa_cache_put(question_norm: str, cache_lang: str,
+                 embedding: list[float] | None, payload: dict) -> None:
+    """Store (or refresh) a cached answer. Never raises."""
+    try:
+        with connection() as conn:
+            conn.execute(
+                """INSERT INTO qa_cache (question_norm, language, embedding, payload)
+                   VALUES (%(qn)s, %(lang)s, %(emb)s, %(payload)s)
+                   ON CONFLICT (question_norm, language) DO UPDATE
+                       SET payload = EXCLUDED.payload,
+                           embedding = EXCLUDED.embedding,
+                           created_at = now()""",
+                {"qn": question_norm, "lang": cache_lang,
+                 "emb": str(embedding) if embedding is not None else None,
+                 "payload": json.dumps(payload, ensure_ascii=False)},
+            )
+            conn.commit()
+    except Exception:
+        logger.exception("qa_cache store failed")
+
+
+def clear_qa_cache() -> None:
+    """Drop the semantic cache — called after a re-index so new content shows."""
+    try:
+        with connection() as conn:
+            conn.execute("TRUNCATE qa_cache")
+            conn.commit()
+    except Exception:
+        logger.exception("qa_cache clear failed")
 
 
 def log_query(*, question, language, answered, top_similarity, latency_ms, sources,

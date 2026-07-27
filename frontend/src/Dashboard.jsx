@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, Coins, Database, FileText, Gauge, MessageSquare, MousePointerClick, ThumbsUp } from "lucide-react";
+import { AlertTriangle, Coins, Database, FileText, Gauge, MessageSquare, MousePointerClick, ThumbsUp, Zap } from "lucide-react";
 
 import { getClickedSources, getGaps, getStats, getTopQuestions } from "./api";
 
@@ -33,7 +33,7 @@ export default function Dashboard() {
   if (error) return <div className="dashError">{error}</div>;
   if (!stats) return <div className="dashLoading">Loading analytics…</div>;
 
-  const { index, usage } = stats;
+  const { index, usage, cache } = stats;
   const helpfulRate =
     usage.helpful + usage.not_helpful > 0
       ? Math.round((usage.helpful / (usage.helpful + usage.not_helpful)) * 100)
@@ -74,6 +74,12 @@ export default function Dashboard() {
           label="Helpful rate"
           value={helpfulRate != null ? `${helpfulRate}%` : "—"}
           sub={`${usage.helpful || 0}👍 / ${usage.not_helpful || 0}👎`}
+        />
+        <Card
+          icon={<Zap size={20} />}
+          label="Answers reused"
+          value={cache?.answers_reused ?? 0}
+          sub={`${cache?.cached_answers ?? 0} cached · saved model calls`}
         />
       </div>
 

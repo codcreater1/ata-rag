@@ -51,10 +51,19 @@ def stats():
             SELECT source_type, count(*) AS n FROM documents
              GROUP BY source_type ORDER BY n DESC
         """)
+
+        # The persistent semantic cache: how many stored answers, and how many
+        # model calls they have spared (each hit is a question served without
+        # touching the LLM).
+        cache = _rows("""
+            SELECT COALESCE(count(*), 0)      AS cached_answers,
+                   COALESCE(sum(hits), 0)     AS answers_reused
+              FROM qa_cache
+        """)[0]
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Database unavailable: {exc}")
 
-    return {"index": index, "usage": usage,
+    return {"index": index, "usage": usage, "cache": cache,
             "documents_by_language": by_language, "documents_by_type": by_type}
 
 

@@ -125,8 +125,9 @@ def run(*, limit: int | None = None, skip_crawl: bool = False,
 
     db.build_vector_index()
     if stats["indexed"]:
-        # Cached answers were built from the previous corpus.
+        # Cached answers were built from the previous corpus — drop both layers.
         cache.clear_answers()
+        db.clear_qa_cache()
     logger.info("ingestion done: %s", stats)
     return stats
 
