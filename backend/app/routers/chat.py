@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
@@ -10,6 +12,8 @@ from pydantic import BaseModel, Field
 
 from app.core import cache, db
 from app.services import rag
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -78,16 +82,33 @@ def _enforce_rate_limit(http: Request) -> None:
         )
 
 
+def _graceful(question: str) -> dict:
+    """A calm 'busy, try again' payload in the question's language. Used when
+    something below the RAG layer raises — usually the database being briefly
+    unreachable while the shared host is overloaded — so the visitor sees a
+    message instead of a raw 500."""
+    lang = rag._detect_language(question)
+    return {
+        "answer": rag._unavailable_answer(lang),
+        "sources": [], "confidence": None, "answered": False,
+        "latency_ms": 0, "query_id": None, "cached": False,
+    }
+
+
 @router.post("/ask", response_model=AskResponse)
 def ask(request: AskRequest, http: Request):
     _enforce_rate_limit(http)
     language = None if request.language in (None, "auto") else request.language
-    return rag.answer(
-        request.question,
-        top_k=request.top_k,
-        language=language,
-        history=[t.model_dump() for t in request.history],
-    )
+    try:
+        return rag.answer(
+            request.question,
+            top_k=request.top_k,
+            language=language,
+            history=[t.model_dump() for t in request.history],
+        )
+    except Exception:
+        logger.exception("answer failed unexpectedly")
+        return _graceful(request.question)
 
 
 @router.post("/ask/stream")
@@ -96,14 +117,28 @@ def ask_stream(request: AskRequest, http: Request):
     is written rather than after a multi-second wait."""
     _enforce_rate_limit(http)
     language = None if request.language in (None, "auto") else request.language
-    generator = rag.stream(
-        request.question,
-        top_k=request.top_k,
-        language=language,
-        history=[t.model_dump() for t in request.history],
-    )
+
+    def guarded():
+        # An error below (e.g. the DB briefly unreachable under host load) must
+        # not surface as a broken stream; close it cleanly with a busy message.
+        try:
+            yield from rag.stream(
+                request.question,
+                top_k=request.top_k,
+                language=language,
+                history=[t.model_dump() for t in request.history],
+            )
+        except Exception:
+            logger.exception("stream failed unexpectedly")
+            payload = _graceful(request.question)
+            yield f"event: token\ndata: {json.dumps({'text': payload['answer']})}\n\n"
+            yield ("event: done\ndata: " + json.dumps({
+                "answered": False, "confidence": None,
+                "latency_ms": 0, "query_id": None, "sources": [],
+            }) + "\n\n")
+
     return StreamingResponse(
-        generator,
+        guarded(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
