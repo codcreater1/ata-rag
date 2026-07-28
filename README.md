@@ -47,30 +47,34 @@ Two findings from studying the site shaped the design:
 
 ## Architecture
 
-```
-      akademiata.pl sitemaps + linked PDFs        Google Apps Script (tuition JSON)
-                    │                                          │
-             crawl + trafilatura                    structured fee cards (PLN / EUR)
-             PDF text extraction                              │
-                    └───────────── heading-aware chunking ────┘
-                                        │
-                          Gemini embeddings (768-dim)
-                                        │
-                          Postgres + pgvector  (Neon)
-   ────────────────────────────────────────────────────────────────────────────
-    question
-        │
-        ├─▶ semantic cache hit?  ──── yes ──▶  stored answer   (0 model credit)
-        │        (pgvector)
-        no
-        │
-     embed ─▶ hybrid search (vector + BM25 · RRF) ─▶ confidence gate
-        │                                                 │
-        │                                          grounded LLM  (Groq → Gemini fallback)
-        │                                                 │
-        └──────────────────────────────▶  answer + citations + confidence
-                                                          │
-                                              trace to LangFuse · log to DB
+```mermaid
+flowchart TD
+    SM["akademiata.pl sitemaps + linked PDFs"]
+    GAS["Google Apps Script — tuition JSON"]
+    SM --> EX["crawl · trafilatura + PDF extraction"]
+    GAS --> FC["structured fee cards — PLN / EUR"]
+    EX --> CH["heading-aware chunking"]
+    FC --> CH
+    CH --> EMB["Gemini embeddings · 768-dim"]
+    EMB --> DB[("Postgres + pgvector · Neon")]
+
+    Q(["question"]) --> C{"semantic cache hit?"}
+    DB -. lookup .-> C
+    C -- hit --> A["stored answer · 0 model credit"]
+    C -- miss --> H["hybrid search<br/>vector + BM25 · RRF"]
+    DB -. search .-> H
+    H --> G{"confidence gate"}
+    G -- weak --> RF["declines — 'could not find it'"]
+    G -- ok --> LLM["grounded LLM<br/>Groq → Gemini fallback"]
+    LLM --> OUT["answer + citations + confidence"]
+    OUT -. cache + log .-> DB
+
+    classDef ingest fill:#e6f0ff,stroke:#4285F4,color:#1a1a1a;
+    classDef store fill:#eae6ff,stroke:#6b4fbb,color:#1a1a1a;
+    classDef query fill:#fff0e6,stroke:#f5682c,color:#1a1a1a;
+    class SM,GAS,EX,FC,CH,EMB ingest;
+    class DB store;
+    class Q,C,A,H,G,RF,LLM,OUT query;
 ```
 
 ## How answering works
@@ -80,6 +84,34 @@ Two findings from studying the site shaped the design:
 3. **Gate.** The best cosine score is compared to a calibrated floor. Below it, the assistant declines rather than answer from weak context.
 4. **Generate.** The top passages become numbered context for the LLM, which is instructed to answer *only* from them, in the reader's language, and never to invent figures.
 5. **Remember.** The answer is cached (in-process and in the vector DB) and logged for the dashboard and LangFuse.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as Visitor
+    participant API as Chat API
+    participant Cache as Semantic cache<br/>(pgvector)
+    participant R as Hybrid retrieval
+    participant LLM as LLM<br/>Groq → Gemini
+    participant O as LangFuse + DB
+
+    U->>API: question
+    API->>Cache: exact + semantic lookup
+    alt cache hit
+        Cache-->>U: stored answer (0 credit)
+    else miss
+        API->>R: embed → vector + BM25 (RRF)
+        R-->>API: top passages + score
+        alt score below gate
+            API-->>U: "could not find it"
+        else grounded
+            API->>LLM: numbered context + question
+            LLM-->>U: streamed answer + sources
+            API->>Cache: store answer + embedding
+        end
+    end
+    API->>O: trace + log
+```
 
 ## Free-tier resilience
 
