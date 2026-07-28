@@ -22,6 +22,20 @@ A visitor asks a question in plain language. The assistant retrieves the most re
 
 A separate **dashboard** shows what people ask, which questions the knowledge base *cannot* answer, retrieval quality, token usage, feedback and cache savings — the observability the project is graded on.
 
+<div align="center">
+
+### Chat
+*Grounded answer with cited sources, confidence score and per-answer feedback.*
+
+<img src="docs/screenshots/chat.png" alt="ATA RAG chat — a question answered with cited sources and a confidence score" width="800">
+
+### Dashboard
+*Live observability: usage, knowledge gaps, retrieval quality, token spend, feedback and cache savings.*
+
+<img src="docs/screenshots/dashboard.png" alt="ATA RAG dashboard — usage, knowledge gaps, retrieval quality and cache savings" width="800">
+
+</div>
+
 ## Why it is built this way
 
 Two findings from studying the site shaped the design:
