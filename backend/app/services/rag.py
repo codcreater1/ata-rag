@@ -464,7 +464,8 @@ def answer(question: str, *, top_k: int | None = None, language: str | None = No
     # via the embedding, matches paraphrases — so a question answered once never
     # spends model credit again. Checked before retrieval and the model call.
     if cacheable:
-        stored = db.qa_cache_get(q_norm, cache_lang, q_vec, settings.qa_cache_similarity)
+        stored = db.qa_cache_get(q_norm, cache_lang, q_vec,
+                                 settings.qa_cache_similarity, settings.qa_cache_max_age_days)
         if stored is not None:
             cache.put_answer(question, language, stored)   # warm L1
             return {**stored, "cached": True}
@@ -579,7 +580,8 @@ def stream(question: str, *, top_k: int | None = None, language: str | None = No
     # matches paraphrases, so an answered question never spends model credit
     # again. Checked before retrieval and the model.
     if cacheable:
-        stored = db.qa_cache_get(q_norm, cache_lang, q_vec, settings.qa_cache_similarity)
+        stored = db.qa_cache_get(q_norm, cache_lang, q_vec,
+                                 settings.qa_cache_similarity, settings.qa_cache_max_age_days)
         if stored is not None:
             cache.put_answer(question, language, stored)   # warm L1
             yield from _replay(stored)

@@ -61,6 +61,12 @@ class Settings(BaseSettings):
     # programme's fee question never does.
     qa_cache_similarity: float = 0.90
 
+    # A cached answer older than this is treated as a miss and regenerated. The
+    # nightly re-index already clears the cache whenever site content changes;
+    # this is the backstop for a change it did not detect, so no answer is ever
+    # served more than a month stale. Cheap: one model call per question a month.
+    qa_cache_max_age_days: int = 30
+
     # gemini-embedding-001 defaults to 3072 dims but supports Matryoshka
     # truncation; 768 keeps the pgvector index small with negligible quality
     # loss and stays under pgvector's 2000-dim ivfflat limit.

@@ -403,20 +403,23 @@ def text_search(query_text: str, *, top_k: int) -> list[dict]:
 
 def qa_cache_get(question_norm: str, cache_lang: str,
                  embedding: list[float] | None,
-                 threshold: float) -> dict | None:
+                 threshold: float, max_age_days: int) -> dict | None:
     """A stored answer for this question, or None. Never raises.
 
     Two layers: an exact match on the normalised text (free, no embedding), then
     — if an embedding is given — the nearest past question by cosine distance,
     accepted only above *threshold*. Both are scoped to *cache_lang* so a reply
-    is never reused across languages. A hit bumps the usage counter.
+    is never reused across languages, and to entries younger than *max_age_days*
+    so an answer is re-generated at least that often even if the site changed in
+    a way the nightly re-index did not catch. A hit bumps the usage counter.
     """
     try:
         with connection() as conn:
             row = conn.execute(
                 """SELECT id, payload FROM qa_cache
-                    WHERE question_norm = %s AND language = %s""",
-                (question_norm, cache_lang),
+                    WHERE question_norm = %s AND language = %s
+                      AND created_at > now() - make_interval(days => %s)""",
+                (question_norm, cache_lang, max_age_days),
             ).fetchone()
 
             if not row and embedding is not None:
@@ -424,9 +427,10 @@ def qa_cache_get(question_norm: str, cache_lang: str,
                     """SELECT id, payload, 1 - (embedding <=> %(q)s::vector) AS sim
                          FROM qa_cache
                         WHERE language = %(lang)s AND embedding IS NOT NULL
+                          AND created_at > now() - make_interval(days => %(days)s)
                         ORDER BY embedding <=> %(q)s::vector
                         LIMIT 1""",
-                    {"q": str(embedding), "lang": cache_lang},
+                    {"q": str(embedding), "lang": cache_lang, "days": max_age_days},
                 ).fetchone()
                 if not row or row["sim"] < threshold:
                     return None
