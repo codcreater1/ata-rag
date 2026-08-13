@@ -94,6 +94,7 @@ export default function Chat({ language = "auto" }) {
   const [busy, setBusy] = useState(false);
   const [suggestions, setSuggestions] = useState([]);
   const endRef = useRef(null);
+  const inputRef = useRef(null);
 
   useEffect(() => {
     getSuggestions().then((s) => setSuggestions([...(s.en || []), ...(s.pl || [])]));
@@ -102,6 +103,13 @@ export default function Chat({ language = "auto" }) {
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, busy]);
+
+  // Keep the cursor in the box so a follow-up can be typed straight away — on
+  // load, and after each answer finishes (the input is disabled while busy, so
+  // focus is lost when it re-enables).
+  useEffect(() => {
+    if (!busy) inputRef.current?.focus();
+  }, [busy]);
 
   function newChat() {
     // Conversation memory means an old topic keeps colouring follow-ups, so a
@@ -241,9 +249,11 @@ export default function Chat({ language = "auto" }) {
           </button>
         )}
         <input
+          ref={inputRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           placeholder="Ask about tuition, admissions, programmes…"
+          autoFocus
           disabled={busy}
         />
         <button type="submit" className="sendBtn" disabled={busy || !input.trim()}>
