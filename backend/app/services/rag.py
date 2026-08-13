@@ -126,17 +126,27 @@ def _looks_polish(text: str) -> bool:
     return len(words & set(re.findall(r"[a-ząćęłńóśźż]+", text.lower()))) >= 2
 
 
-# Strong Turkish letters: ş and ğ do not occur in the other three languages and
-# are not typed by accident in English. Deliberately NOT including ı (dotless i):
-# it is a routine Turkish-keyboard slip for "i" — "tuttıons" for "tuitions" — and
-# a single one must not flip an otherwise-English sentence to Turkish. Genuine
-# Turkish text carries ş/ğ or one of the function words below.
-_TR_CHARS = re.compile(r"[şŞğĞ]")
+# Turkish letters that never occur in the other three languages and are not
+# typed by accident in English (ş ğ ç ö ü — each needs its own key).
+_TR_STRONG = re.compile(r"[şŞğĞçÇöÖüÜ]")
+# ı (dotless i) is a routine Turkish-keyboard slip for "i" ("tuttıons" for
+# "tuitions"), so on its own it is only a hint — trusted below only when the
+# sentence does not otherwise read as English.
+_TR_WEAK = re.compile(r"[ıİ]")
 _TR_WORDS = {"hakkında", "istiyorum", "nasıl", "nedir", "için", "başvuru",
-             "başvurmak", "kaç", "ne", "mı", "mi", "mu", "mü", "var", "nerede",
-             "üniversite", "öğrenci", "merhaba", "selam", "ücret", "bölüm",
-             "gerekli", "belge", "kayıt", "sınav", "yıl", "burs", "kadar",
-             "hangi", "mühendisliği", "bilgisayar"}
+             "başvurmak", "kaç", "ne", "neler", "mı", "mi", "mu", "mü", "var",
+             "nerede", "üniversite", "öğrenci", "merhaba", "selam", "ücret",
+             "bölüm", "gerekli", "belge", "belgeler", "evrak", "lazım", "gerek",
+             "kayıt", "sınav", "yıl", "burs", "kadar", "hangi", "mühendisliği",
+             "bilgisayar"}
+# English function words. Turkish questions do not contain these; an English
+# question almost always does — so their presence vetoes the weak ı signal.
+_EN_WORDS = {"the", "a", "an", "is", "are", "was", "were", "do", "does", "did",
+             "what", "whats", "how", "why", "where", "when", "who", "which",
+             "can", "could", "will", "would", "you", "your", "i", "me", "my",
+             "we", "our", "for", "of", "to", "in", "on", "at", "and", "or",
+             "with", "about", "need", "want", "give", "write", "please", "tell",
+             "show", "explain", "get", "have", "this", "that", "there", "it"}
 
 
 def _detect_language(text: str) -> str:
@@ -150,8 +160,13 @@ def _detect_language(text: str) -> str:
     """
     if re.search(r"[Ѐ-ӿ]", text):          # Cyrillic → Ukrainian
         return "uk"
-    low = text.lower()
-    if _TR_CHARS.search(text) or _TR_WORDS & set(re.findall(r"\w+", low)):
+    words = set(re.findall(r"\w+", text.lower()))
+    # Unambiguous Turkish: a Turkish-only letter or a Turkish function word.
+    if _TR_STRONG.search(text) or (_TR_WORDS & words):
+        return "tr"
+    # Only ı to go on: Turkish unless the sentence reads as English. This keeps
+    # "evrak neler lazım" (Turkish) apart from "tuttıons for the…" (English).
+    if _TR_WEAK.search(text) and not (_EN_WORDS & words):
         return "tr"
     if _looks_polish(text):
         return "pl"
