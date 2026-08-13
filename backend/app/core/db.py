@@ -33,12 +33,24 @@ def get_pool() -> ConnectionPool:
         url = database_url()
         if not url:
             raise RuntimeError("DATABASE_URL is not set")
-        _pool = ConnectionPool(url, min_size=1, max_size=8, kwargs={"row_factory": dict_row})
+        _pool = ConnectionPool(
+            url, min_size=1, max_size=8, kwargs={"row_factory": dict_row},
+            # Neon (serverless) closes idle connections, so a pooled one can be
+            # dead by the time it is handed out — which surfaced as intermittent
+            # 500s under host load. check_connection validates each connection at
+            # checkout and recycles a dead one, so the caller always gets a live
+            # one instead of failing on first use.
+            check=ConnectionPool.check_connection,
+        )
     return _pool
 
 
 @contextmanager
 def connection():
+    # check_connection above already retries at checkout: a dead connection is
+    # validated, discarded and replaced with a live one (up to the pool timeout),
+    # which is exactly the transient failure we were seeing under host load. So
+    # the caller here just borrows a connection that is guaranteed live.
     with get_pool().connection() as conn:
         yield conn
 
