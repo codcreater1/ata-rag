@@ -38,7 +38,7 @@ CONTENT_SITEMAPS = [
 
 # Never index these path segments even if a sitemap lists them.
 EXCLUDE_PATTERNS = re.compile(
-    r"/(wp-admin|wp-json|feed|search|tag|category|author|page/\d+)(/|$)", re.I
+    r"/(wp-admin|wp-json|feed|search|tag|category|author|page/\d+)(/|$)", re.IGNORECASE
 )
 
 USER_AGENT = "ATA-RAG-Bot/1.0 (+akademiata.pl knowledge base)"
@@ -104,7 +104,7 @@ def _sitemap_urls(client: httpx.Client) -> list[tuple[str, str, str]]:
             continue
 
         # <url><loc>..</loc><lastmod>..</lastmod></url>
-        for block in re.findall(r"<url>(.*?)</url>", body, re.S):
+        for block in re.findall(r"<url>(.*?)</url>", body, re.DOTALL):
             loc = re.search(r"<loc>([^<]+)</loc>", block)
             if not loc:
                 continue
@@ -133,7 +133,7 @@ def _extract(html: str, url: str) -> tuple[str, str]:
     meta = trafilatura.extract_metadata(html)
     title = (meta.title if meta and meta.title else "").strip()
     if not title:
-        m = re.search(r"<title>([^<]*)</title>", html, re.I)
+        m = re.search(r"<title>([^<]*)</title>", html, re.IGNORECASE)
         title = m.group(1).strip() if m else url
 
     # Strip the site-wide suffix WordPress appends to every <title>.

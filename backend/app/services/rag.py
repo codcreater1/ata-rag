@@ -119,7 +119,7 @@ def _unavailable_answer(language_hint: str) -> str:
 
 
 def _looks_polish(text: str) -> bool:
-    if re.search(r"[ąćęłńóśźż]", text, re.I):
+    if re.search(r"[ąćęłńóśźż]", text, re.IGNORECASE):
         return True
     words = {"jakie", "ile", "gdzie", "kiedy", "czy", "jak", "czesne", "studia",
              "rekrutacja", "opłata", "kierunek", "dla", "jest", "sa"}
@@ -274,7 +274,7 @@ _FOLLOW_UP_OPENERS = (
 )
 # A question made only of references ("is it free?", "where is that?") also
 # depends on the previous turn.
-_REFERENTIAL = re.compile(r"\b(it|its|that|this|there|them|they|ten|to|tam|onu|orada)\b", re.I)
+_REFERENTIAL = re.compile(r"\b(it|its|that|this|there|them|they|ten|to|tam|onu|orada)\b", re.IGNORECASE)
 
 
 def _is_follow_up(question: str) -> bool:
@@ -495,7 +495,8 @@ def answer(question: str, *, top_k: int | None = None, language: str | None = No
         }
 
     context, sources = _build_context(hits)
-    text, usage = _answer_with_llm(question, context, language=language, history=history)
+    # Token usage is logged only on the streaming path; here it is unused.
+    text, _usage = _answer_with_llm(question, context, language=language, history=history)
     _flush_traces()
     answered = text is not None
     if not answered:

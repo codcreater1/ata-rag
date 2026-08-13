@@ -33,7 +33,7 @@ MIN_TEXT_CHARS = 400
 def discover_pdf_links(html: str, page_url: str) -> set[str]:
     """PDF URLs linked from one page, absolutised and de-duplicated."""
     found: set[str] = set()
-    for href in re.findall(r'href="([^"]+)"', html, re.I):
+    for href in re.findall(r'href="([^"]+)"', html, re.IGNORECASE):
         url = urljoin(page_url, href.strip())
         path = urlparse(url).path.lower()
         if path.endswith(".pdf") and urlparse(url).netloc.endswith("akademiata.pl"):

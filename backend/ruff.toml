@@ -1,0 +1,12 @@
+# Ruff configuration for the backend.
+#
+# We keep Ruff's default lints and opt out of one opinionated rule that conflicts
+# with a deliberate choice in this codebase.
+
+[lint]
+ignore = [
+    # Broad `except Exception` is intentional here: the cache, analytics and
+    # answer paths must degrade gracefully and never crash a request. Each such
+    # handler logs the error and returns a safe fallback.
+    "BLE001",
+]

@@ -10,8 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
 
-from app.core.config import settings  # noqa: E402
-from app.routers import chat, dashboard  # noqa: E402
+from app.core.config import settings
+from app.routers import chat, dashboard
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s %(message)s")
