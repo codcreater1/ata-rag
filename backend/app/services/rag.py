@@ -126,13 +126,17 @@ def _looks_polish(text: str) -> bool:
     return len(words & set(re.findall(r"[a-ząćęłńóśźż]+", text.lower()))) >= 2
 
 
-# Turkish letters no other of our four languages use (Polish has ó but not the
-# rest), plus common function words for questions with no special character.
-_TR_CHARS = re.compile(r"[şğıİ]")
+# Strong Turkish letters: ş and ğ do not occur in the other three languages and
+# are not typed by accident in English. Deliberately NOT including ı (dotless i):
+# it is a routine Turkish-keyboard slip for "i" — "tuttıons" for "tuitions" — and
+# a single one must not flip an otherwise-English sentence to Turkish. Genuine
+# Turkish text carries ş/ğ or one of the function words below.
+_TR_CHARS = re.compile(r"[şŞğĞ]")
 _TR_WORDS = {"hakkında", "istiyorum", "nasıl", "nedir", "için", "başvuru",
              "başvurmak", "kaç", "ne", "mı", "mi", "mu", "mü", "var", "nerede",
              "üniversite", "öğrenci", "merhaba", "selam", "ücret", "bölüm",
-             "gerekli", "belge", "kayıt", "sınav"}
+             "gerekli", "belge", "kayıt", "sınav", "yıl", "burs", "kadar",
+             "hangi", "mühendisliği", "bilgisayar"}
 
 
 def _detect_language(text: str) -> str:
