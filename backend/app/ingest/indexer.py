@@ -66,8 +66,8 @@ def run(*, limit: int | None = None, skip_crawl: bool = False,
 
     # Embed the highest-value pages first so a day capped by the free-tier quota
     # still covers tuition, programmes and admissions before news posts.
-    priority = {"tuition": 0, "page": 1, "pdf": 2, "bachelor": 2, "master": 2,
-                "postgraduate": 3, "mba": 3, "courses": 3, "faq": 1,
+    priority = {"fees": 0, "tuition": 0, "page": 1, "pdf": 2, "bachelor": 2,
+                "master": 2, "postgraduate": 3, "mba": 3, "courses": 3, "faq": 1,
                 "contact": 4, "exams": 4, "post": 9}
     pages.sort(key=lambda p: priority.get(p.source_type, 5))
 

@@ -237,6 +237,8 @@ def build_price_pages() -> list:
     best: dict[tuple, tuple] = {}
 
     pages: list[Page] = []
+    recruitment_fees: set[int] = set()
+    enrolment_fees: set[int] = set()
 
     for lang, cities in (data.get("RAW") or {}).items():
         if not isinstance(cities, dict):
@@ -254,6 +256,10 @@ def build_price_pages() -> list:
                     if not built:
                         continue
                     title, md, meta = built
+                    if entry.get("rekr") is not None:
+                        recruitment_fees.add(entry["rekr"])
+                    if entry.get("wps"):
+                        enrolment_fees.add(entry["wps"])
                     pages.append(Page(
                         url=entry.get("ps") or CALCULATOR_PAGE, title=title,
                         markdown=md, language=lang, source_type="tuition",
@@ -293,5 +299,51 @@ def build_price_pages() -> list:
             language=lang, source_type="tuition", metadata=meta,
         ))
 
+    # A standalone fees card. The recruitment (application) fee is buried in
+    # every per-programme tuition card, so a generic "is there a recruitment
+    # fee, and how much?" matched the programme pages that merely list it as a
+    # required document — never the amount. This card carries the figure on its
+    # own so the question retrieves it directly.
+    fees_page = _fees_card(recruitment_fees, enrolment_fees)
+    if fees_page:
+        pages.append(fees_page)
+
     logger.info("built %d tuition cards", len(pages))
     return pages
+
+
+def _fee_phrase(values: set[int], unit: str) -> str:
+    """'200 EUR' for one value, '200–300 EUR' for a range."""
+    vs = sorted(values)
+    return f"{vs[0]} {unit}" if len(vs) == 1 else f"{vs[0]}–{vs[-1]} {unit}"
+
+
+def _fees_card(recruitment: set[int], enrolment: set[int]):
+    """A dedicated, directly-retrievable summary of the one-off fees."""
+    from app.ingest.crawler import Page
+
+    if not recruitment and not enrolment:
+        return None
+
+    lines = [
+        "# Recruitment and enrolment fees",
+        "",
+        ("These are one-off fees paid when you apply, separate from tuition. "
+         "Also called the application fee or admission fee."),
+        "",
+    ]
+    if recruitment:
+        lines.append(f"- Recruitment fee (application fee): "
+                     f"**{_fee_phrase(recruitment, 'EUR')}** for international "
+                     f"(English-taught) programmes.")
+    if enrolment:
+        lines.append(f"- Enrolment fee: **{_fee_phrase(enrolment, 'EUR')}**.")
+    lines += ["", f"Source: {CALCULATOR_PAGE}"]
+
+    return Page(
+        url=f"{CALCULATOR_PAGE.rstrip('/')}/#fees",
+        title="Recruitment and enrolment fees",
+        markdown="\n".join(lines), language="en", source_type="fees",
+        metadata={"recruitment_fee_eur": sorted(recruitment) or None,
+                  "enrolment_fee_eur": sorted(enrolment) or None, "kind": "fees"},
+    )
