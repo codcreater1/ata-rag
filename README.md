@@ -197,6 +197,17 @@ Secrets are read under their **provider-native names** (no prefix); everything e
 
 Every answer is traced in LangFuse — retrieval, prompt, model output, latency and tokens — when `LANGFUSE_*` keys are set, and every question (answered or not) is logged to the `queries` table. The dashboard surfaces common questions, **unanswered ones** (where the knowledge base has gaps), retrieval quality, token usage, feedback and **cache savings** (how many model calls the semantic cache has spared). `GET /health` reports live tracing status.
 
+## Evaluation
+
+A golden set of ~25 questions (`backend/eval/cases.json`) covers the behaviours that matter — tuition figures, admissions, programmes, the four reply languages, the scope guardrail and the prompt-injection defence — each with declared expectations (facts that must appear, forbidden strings, the answer's language, answered vs declined). `run_eval` scores them and fails below a pass-rate threshold, so a change that breaks one shows up immediately.
+
+```bash
+cd backend
+python -m eval.run_eval                                   # in-process
+python -m eval.run_eval --api https://…  --delay 3        # a deployed instance
+python -m eval.run_eval --category scope                  # one slice
+```
+
 ## Deployment (Coolify)
 
 Three resources, all pointing at the same Neon database:
