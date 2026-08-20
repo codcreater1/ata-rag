@@ -208,6 +208,15 @@ python -m eval.run_eval --api https://…  --delay 3        # a deployed instanc
 python -m eval.run_eval --category scope                  # one slice
 ```
 
+The eval needs live keys, so it can't gate CI. The pure logic it leans on —
+language detection, the BM25 query builder, the chunk-size guard, cache keying —
+has fast unit tests (`backend/tests/`) that run in CI with no keys or database,
+catching a regression in exactly the functions that have needed fixing.
+
+```bash
+cd backend && pytest -q tests
+```
+
 ## Deployment (Coolify)
 
 Three resources, all pointing at the same Neon database:

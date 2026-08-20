@@ -20,10 +20,12 @@ jobs:
           cache: pip
           cache-dependency-path: backend/requirements.txt
       - run: pip install -r requirements.txt
-      - run: pip install ruff
+      - run: pip install ruff pytest
       - run: ruff check .
       - name: Compile check
         run: python -m compileall app
+      - name: Unit tests
+        run: pytest -q tests
 
   frontend:
     runs-on: ubuntu-latest
