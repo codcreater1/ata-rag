@@ -134,3 +134,9 @@ export async function getTopQuestions() {
   if (!res.ok) return { questions: [] };
   return res.json();
 }
+
+export async function getActionItems() {
+  const res = await fetch(`${API_URL}/dashboard/action-items`);
+  if (!res.ok) return { unanswered: [], disliked: [] };
+  return res.json();
+}

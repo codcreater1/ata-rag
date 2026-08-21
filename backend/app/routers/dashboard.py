@@ -121,6 +121,41 @@ def gaps(limit: int = 20):
         raise HTTPException(status_code=503, detail=f"Database unavailable: {exc}")
 
 
+@router.get("/action-items")
+def action_items(limit: int = 25):
+    """What the university should act on: questions the assistant could not
+    answer (a content gap), and answered questions visitors marked unhelpful (a
+    quality problem). Both are grouped and ranked so the biggest wins are first.
+    """
+    try:
+        unanswered = _rows("""
+            SELECT lower(btrim(question)) AS question,
+                   count(*)               AS times_asked,
+                   round(avg(top_similarity)::numeric, 3) AS avg_similarity,
+                   max(asked_at)          AS last_asked
+              FROM queries
+             WHERE NOT answered
+             GROUP BY lower(btrim(question))
+             ORDER BY times_asked DESC, last_asked DESC
+             LIMIT %s
+        """, (min(limit, 100),))
+        disliked = _rows("""
+            SELECT lower(btrim(question)) AS question,
+                   count(*) FILTER (WHERE feedback = -1) AS not_helpful,
+                   count(*)                              AS times_asked,
+                   max(asked_at)                         AS last_asked
+              FROM queries
+             WHERE answered
+             GROUP BY lower(btrim(question))
+            HAVING count(*) FILTER (WHERE feedback = -1) > 0
+             ORDER BY not_helpful DESC, last_asked DESC
+             LIMIT %s
+        """, (min(limit, 100),))
+        return {"unanswered": unanswered, "disliked": disliked}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Database unavailable: {exc}")
+
+
 @router.get("/clicked-sources")
 def clicked_sources(limit: int = 20):
     """Sources visitors actually opened — what they trusted enough to go read."""

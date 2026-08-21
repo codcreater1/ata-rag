@@ -1,7 +1,28 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, Coins, Database, FileText, Gauge, MessageSquare, MousePointerClick, ThumbsUp, Zap } from "lucide-react";
+import { AlertTriangle, ClipboardList, Coins, Database, Download, FileText, Gauge, MessageSquare, MousePointerClick, ThumbsDown, ThumbsUp, Zap } from "lucide-react";
 
-import { getClickedSources, getGaps, getStats, getTopQuestions } from "./api";
+import { getActionItems, getClickedSources, getGaps, getStats, getTopQuestions } from "./api";
+
+// The university acts on these off the dashboard, so make them portable. A CSV
+// downloads cleanly into a spreadsheet; the browser sandbox permits it here (a
+// real app, not an embedded artifact).
+function downloadActionItemsCsv(unanswered, disliked) {
+  const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const rows = [["type", "question", "count", "detail", "last_asked"]];
+  for (const g of unanswered)
+    rows.push(["missing answer", g.question, g.times_asked,
+      `match ${Math.round((g.avg_similarity || 0) * 100)}%`, g.last_asked]);
+  for (const d of disliked)
+    rows.push(["unhelpful answer", d.question, d.not_helpful,
+      `${d.not_helpful} of ${d.times_asked} 👎`, d.last_asked]);
+  const csv = rows.map((r) => r.map(esc).join(",")).join("\r\n");
+  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `ata-content-gaps-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 function Card({ icon, label, value, sub }) {
   return (
@@ -21,6 +42,7 @@ export default function Dashboard() {
   const [gaps, setGaps] = useState([]);
   const [top, setTop] = useState([]);
   const [clicked, setClicked] = useState([]);
+  const [actions, setActions] = useState({ unanswered: [], disliked: [] });
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -28,6 +50,7 @@ export default function Dashboard() {
     getGaps().then((d) => setGaps(d.gaps || []));
     getTopQuestions().then((d) => setTop(d.questions || []));
     getClickedSources().then((d) => setClicked(d.sources || []));
+    getActionItems().then((d) => setActions({ unanswered: d.unanswered || [], disliked: d.disliked || [] }));
   }, []);
 
   if (error) return <div className="dashError">{error}</div>;
@@ -82,6 +105,57 @@ export default function Dashboard() {
           sub={`${cache?.cached_answers ?? 0} cached · saved model calls`}
         />
       </div>
+
+      {(actions.unanswered.length > 0 || actions.disliked.length > 0) && (
+        <section className="dashPanel">
+          <div className="panelHead">
+            <h3><ClipboardList size={16} /> Action items — content to add or fix</h3>
+            <button
+              className="exportBtn"
+              onClick={() => downloadActionItemsCsv(actions.unanswered, actions.disliked)}
+              title="Download as CSV"
+            >
+              <Download size={14} /> Export CSV
+            </button>
+          </div>
+          <p className="panelHint">
+            What to publish on the website next: questions the assistant couldn&apos;t
+            answer, and answers visitors marked unhelpful.
+          </p>
+          <div className="dashCols">
+            <div>
+              <div className="actionLabel"><AlertTriangle size={13} /> Missing answers</div>
+              {actions.unanswered.length === 0 ? (
+                <div className="dashEmpty">None.</div>
+              ) : (
+                <ul className="qList">
+                  {actions.unanswered.map((g, i) => (
+                    <li key={i}>
+                      <span className="qText">{g.question}</span>
+                      <span className="qMeta">×{g.times_asked}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div>
+              <div className="actionLabel"><ThumbsDown size={13} /> Unhelpful answers</div>
+              {actions.disliked.length === 0 ? (
+                <div className="dashEmpty">None — every rated answer was helpful.</div>
+              ) : (
+                <ul className="qList">
+                  {actions.disliked.map((d, i) => (
+                    <li key={i}>
+                      <span className="qText">{d.question}</span>
+                      <span className="qMeta">{d.not_helpful} 👎</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
 
       <div className="dashCols">
         <section className="dashPanel">

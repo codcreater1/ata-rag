@@ -197,6 +197,8 @@ Secrets are read under their **provider-native names** (no prefix); everything e
 
 Every answer is traced in LangFuse — retrieval, prompt, model output, latency and tokens — when `LANGFUSE_*` keys are set, and every question (answered or not) is logged to the `queries` table. The dashboard surfaces common questions, **unanswered ones** (where the knowledge base has gaps), retrieval quality, token usage, feedback and **cache savings** (how many model calls the semantic cache has spared). `GET /health` reports live tracing status.
 
+It also turns that data into an **action list**: the questions the assistant could not answer, and the answers visitors marked unhelpful — grouped, ranked, and exportable as CSV, so the observability drives concrete edits to the website rather than just sitting on a chart.
+
 ## Evaluation
 
 A golden set of ~25 questions (`backend/eval/cases.json`) covers the behaviours that matter — tuition figures, admissions, programmes, the four reply languages, the scope guardrail and the prompt-injection defence — each with declared expectations (facts that must appear, forbidden strings, the answer's language, answered vs declined). `run_eval` scores them and fails below a pass-rate threshold, so a change that breaks one shows up immediately.

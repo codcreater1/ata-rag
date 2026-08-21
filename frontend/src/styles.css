@@ -162,6 +162,20 @@ body {
 @media (max-width: 720px) { .dashCols { grid-template-columns: 1fr; } }
 .dashPanel { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 18px; box-shadow: var(--shadow); }
 .dashPanel h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 4px; font-size: 15px; }
+.panelHead { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.panelHead h3 { margin: 0; }
+.exportBtn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 11px; border: 1px solid var(--border); border-radius: 8px;
+  background: transparent; color: var(--muted);
+  font-size: 12.5px; font-weight: 600; font-family: inherit; cursor: pointer;
+}
+.exportBtn:hover { color: var(--accent); border-color: var(--accent); }
+.actionLabel {
+  display: flex; align-items: center; gap: 6px; margin: 4px 0 8px;
+  font-size: 12px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .04em; color: var(--muted);
+}
 .panelHint { color: var(--muted); font-size: 12.5px; margin: 0 0 14px; }
 .qList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .qList li { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 13.5px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
