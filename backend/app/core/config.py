@@ -77,7 +77,10 @@ class Settings(BaseSettings):
     # Answering LLM (OpenAI-compatible endpoint; Groq by default)
     # ---------------------------------------------------------------- #
     llm_base_url: str = "https://api.groq.com/openai/v1"
-    llm_model: str = "llama-3.3-70b-versatile"
+    # Groq retired the Llama 3.x models; gpt-oss-120b is its current large
+    # open-weight model. A retired model 404s and drops every answer to the
+    # slower Gemini fallback, so keep this pointed at one Groq actually serves.
+    llm_model: str = "openai/gpt-oss-120b"
     answer_language: str = "auto"   # auto = mirror the user's question
 
     # Groq's free tier allows 100k tokens per day, which a single afternoon of
