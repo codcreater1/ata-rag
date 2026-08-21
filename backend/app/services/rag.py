@@ -343,6 +343,38 @@ def _embed_or_none(search_text: str) -> list[float] | None:
         return None
 
 
+# Fee/price words across the four languages. When one appears, the question is
+# about money and the fee cards must be in the context — see _search.
+_FEE_WORDS = re.compile(
+    r"\b(tuition|fee|fees|cost|costs|price|pricing|"          # en
+    r"czesne|opłat|koszt|cena|ile\s+kosztuje|"                # pl
+    r"ücret|fiyat|kaç\s+para|ne\s+kadar|"                     # tr
+    r"вартіст|ціна|кошту)\w*", re.IGNORECASE)                 # uk
+
+
+# A fee card this close to the question is treated as tuition intent even with
+# no fee word — measured: real tuition questions land at 0.69–0.74, unrelated
+# ones (apply, programmes, location) stay at or below 0.65.
+_FEE_CARD_MIN_SIM = 0.66
+
+
+def _tuition_intent(text: str) -> bool:
+    return bool(_FEE_WORDS.search(text))
+
+
+def _merge_prefer(cards: list[dict], hits: list[dict], top_k: int) -> list[dict]:
+    """Put the fee cards first, then the hybrid hits, de-duplicated by URL."""
+    seen: set[str] = set()
+    out: list[dict] = []
+    for h in [*cards, *hits]:
+        url = h.get("url")
+        if url in seen:
+            continue
+        seen.add(url)
+        out.append(h)
+    return out[:top_k]
+
+
 def _search(q_vec: list[float] | None, search_text: str,
             top_k: int) -> tuple[list[dict], float | None, bool]:
     """Retrieve chunks. Returns (hits, top_similarity, degraded).
@@ -358,6 +390,19 @@ def _search(q_vec: list[float] | None, search_text: str,
     # The gate reads the best cosine score in the set, not the fused rank: a
     # chunk pulled in by full-text alone should not count as semantic confidence.
     top_sim = max((float(h["similarity"]) for h in hits), default=0.0)
+
+    # A tuition question can be swamped by a programme's own pages, so its fee
+    # card never reaches the candidate pool ("what is the tuition for
+    # architecture?"). Fetch the fee cards directly and put them first when the
+    # question is about money — by an explicit fee word (catches a card that
+    # scores low) OR by the card being a close match (catches a typo like
+    # "tuttion" that the word list misses but the embedding does not).
+    cards = db.top_by_type(q_vec, ("tuition", "fees"), top_k=3)
+    if cards and (_tuition_intent(search_text)
+                  or float(cards[0]["similarity"]) >= _FEE_CARD_MIN_SIM):
+        hits = _merge_prefer(cards, hits, top_k)
+        top_sim = max(top_sim, *(float(c["similarity"]) for c in cards))
+
     return hits, top_sim, False
 
 

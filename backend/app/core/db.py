@@ -363,6 +363,39 @@ def hybrid_search(query_embedding: list[float], query_text: str, *,
         return conn.execute(sql, params).fetchall()
 
 
+def top_by_type(query_embedding: list[float], source_types: tuple[str, ...],
+                *, top_k: int) -> list[dict]:
+    """Nearest chunks restricted to certain source types, by cosine.
+
+    Fee cards are outnumbered by the programme and marketing pages that share a
+    programme's name, so for a tuition question they fall out of the general
+    candidate pool entirely. Fetching them on their own guarantees the figure is
+    available to merge into the context.
+    """
+    # Filter to the type first (a MATERIALIZED CTE), then rank by distance. The
+    # ivfflat index only scans a few lists, so a selective source_type filter on
+    # top of an index scan can miss all matches and return nothing; materialising
+    # the (small) typed set forces an exact nearest-neighbour over just those.
+    sql = """
+        WITH candidates AS MATERIALIZED (
+            SELECT c.text, c.metadata, c.embedding, d.url, d.title, d.language
+              FROM chunks c
+              JOIN documents d ON d.id = c.document_id
+             WHERE c.embedding IS NOT NULL AND d.source_type = ANY(%(types)s)
+        )
+        SELECT text, metadata, url, title, language,
+               1 - (embedding <=> %(q)s::vector) AS similarity,
+               NULL::float AS fusion_score
+          FROM candidates
+         ORDER BY embedding <=> %(q)s::vector
+         LIMIT %(k)s
+    """
+    with connection() as conn:
+        return conn.execute(
+            sql, {"q": str(query_embedding), "types": list(source_types), "k": top_k},
+        ).fetchall()
+
+
 def _or_tsquery(query_text: str) -> str:
     """Build an OR tsquery from a question's content words.
 

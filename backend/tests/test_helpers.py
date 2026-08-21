@@ -69,3 +69,20 @@ def test_normalise_question_collapses_case_space_punctuation():
 def test_fee_phrase():
     assert _fee_phrase({200}, "EUR") == "200 EUR"
     assert _fee_phrase({300, 200, 250}, "EUR") == "200–300 EUR"
+
+
+def test_tuition_intent():
+    for q in ["what is the tuition for architecture", "how much does it cost",
+              "architecture ücreti ne kadar", "ile kosztuje architektura",
+              "what are the fees"]:
+        assert rag._tuition_intent(q), q
+    for q in ["how do I apply", "which programmes are offered in english",
+              "where is the university"]:
+        assert not rag._tuition_intent(q), q
+
+
+def test_merge_prefer_puts_cards_first_and_dedupes():
+    cards = [{"url": "a", "title": "fee A"}, {"url": "b", "title": "fee B"}]
+    hits = [{"url": "c", "title": "page C"}, {"url": "a", "title": "page A dup"}]
+    merged = rag._merge_prefer(cards, hits, top_k=10)
+    assert [m["url"] for m in merged] == ["a", "b", "c"]   # cards first, 'a' once
