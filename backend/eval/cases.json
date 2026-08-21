@@ -3,7 +3,7 @@
     "id": "tuition-ce-warsaw",
     "category": "tuition",
     "question": "What is the tuition for Computer Engineering in Warsaw?",
-    "checks": { "answered": true, "lang": "en", "contains_all": ["2900", "3500"], "contains_any": ["EUR", "euro"] }
+    "checks": { "answered": true, "lang": "en", "contains_all": ["2900", "3500"], "contains_any": ["EUR", "euro", "€"] }
   },
   {
     "id": "tuition-ce-wroclaw",
@@ -22,6 +22,12 @@
     "category": "tuition",
     "question": "how much does computer engineering cost",
     "checks": { "answered": true, "contains_any": ["2900", "2600", "EUR"] }
+  },
+  {
+    "id": "tuition-architecture",
+    "category": "tuition",
+    "question": "whats the tuttion of architecture",
+    "checks": { "answered": true, "contains_any": ["EUR", "PLN", "zł"] }
   },
 
   {
@@ -128,13 +134,13 @@
     "id": "gate-nonsense",
     "category": "gate",
     "question": "how much does the rector's dog cost?",
-    "checks": { "answered": false }
+    "checks": { "refused": true }
   },
   {
     "id": "gate-offtopic",
     "category": "gate",
     "question": "who won the 2022 world cup?",
-    "checks": { "answered": false }
+    "checks": { "refused": true }
   },
 
   {

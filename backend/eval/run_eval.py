@@ -86,7 +86,10 @@ def _check(case: dict, result: dict) -> list[str]:
     """Return a list of failure messages (empty means the case passed)."""
     checks = case.get("checks", {})
     answer = result.get("answer", "") or ""
-    low = answer.lower()
+    # Collapse a space that sits *between digits* so a keyword check for "2900"
+    # still matches a model that prints "2 900" with a thin/nbsp separator. \s
+    # covers the Unicode space variants models use as thousands separators.
+    low = re.sub(r"(?<=\d)\s(?=\d)", "", answer.lower())
     fails: list[str] = []
 
     if "answered" in checks and bool(result.get("answered")) != checks["answered"]:
